@@ -1,0 +1,51 @@
+[app]
+
+# 앱 라벨은 ASCII 고정(빌드 안정성). 한글 라벨 필요 시 strings.xml 오버레이 사용.
+title = ERMonitor
+package.name = ermonitor
+package.domain = org.ermon
+
+source.dir = .
+source.include_exts = py,png,jpg,jpeg,ttf,ttc,otf,json,txt,html,css,js
+source.include_patterns = fonts/*,assets/*
+source.exclude_dirs = tests,bin,.git,.github,.buildozer,p4a,tools,__pycache__
+source.exclude_patterns = *.log,*.apk,*.aab,README*.md
+
+version = 1.0.0
+
+# Flask/Requests 전체 의존 트리를 명시 → p4a 자동해석 실패 시 원인 즉시 특정
+requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
+
+orientation = portrait
+fullscreen = 0
+android.allow_backup = True
+
+# ── Android SDK/NDK ────────────────────────────────────────────────
+android.api = 34
+android.minapi = 26
+android.ndk = 25b
+android.accept_sdk_license = True
+android.archs = arm64-v8a,armeabi-v7a
+android.release_artifact = apk
+android.debug_artifact = apk
+
+# ── 권한 ───────────────────────────────────────────────────────────
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,WAKE_LOCK,VIBRATE,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,SYSTEM_ALERT_WINDOW,REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,RECEIVE_BOOT_COMPLETED,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+
+# ── 매니페스트 보강 ────────────────────────────────────────────────
+# PiP(supportsPictureInPicture)는 activity 속성이라 p4a 템플릿 패치로 주입
+# (tools/patch_p4a_manifest.sh — 워크플로에서 자동 실행)
+android.manifest.launch_mode = singleTask
+android.extra_manifest_xml = ./src/android/extra_manifest.xml
+android.extra_manifest_application_arguments = ./src/android/extra_manifest_application_arguments.xml
+
+# ── p4a ────────────────────────────────────────────────────────────
+p4a.bootstrap = sdl2
+# 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
+p4a.source_dir =
+
+android.logcat_filters = *:S python:D SDL:D AndroidRuntime:E
+
+[buildozer]
+log_level = 2
+warn_on_root = 0

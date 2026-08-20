@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.spec text eol=lf
+*.py text eol=lf
+*.ttf binary
+*.ttc binary
+*.apk binary

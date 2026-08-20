@@ -1,0 +1,3 @@
+android:requestLegacyExternalStorage="true"
+android:usesCleartextTraffic="true"
+android:largeHeap="true"

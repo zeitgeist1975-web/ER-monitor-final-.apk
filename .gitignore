@@ -1,0 +1,6 @@
+.buildozer/
+p4a/
+bin/
+__pycache__/
+*.pyc
+*.log
