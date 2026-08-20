@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       p4a_ref:
-        description: 'python-for-android 브랜치/태그 (기본 master)'
+        description: 'python-for-android 태그 (기본 v2024.01.21 = 검증된 안정판)'
         required: false
-        default: 'master'
+        default: 'v2024.01.21'
       commit_generated:
         description: '생성된 빌드 파일을 저장소에 커밋 (true/false)'
         required: false
@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 env:
-  P4A_REF: ${{ github.event.inputs.p4a_ref || 'master' }}
+  P4A_REF: ${{ github.event.inputs.p4a_ref || 'v2024.01.21' }}
   COMMIT_GEN: ${{ github.event.inputs.commit_generated || 'true' }}
   PYTHONUNBUFFERED: '1'
 
@@ -42,20 +42,40 @@ jobs:
       # ── 0. 소스 확보 ────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      - name: 원본 앱 소스 탐색
+      - name: 원본 앱 소스 탐색 및 파일명 안전화
         run: |
-          set -x
-          ls -al
-          SRC=$(ls -1 ER_monitor*.py 2>/dev/null | head -1 || true)
+          # ── 원본 앱 소스 자동 탐색 + 파일명 안전화 ──────────────────────
+          # 공백·괄호·한글 등이 포함된 파일명도 자동으로 안전한 이름으로 변경한다.
+          SRC=""
+          for f in *.py ./*/*.py; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in main.py|setup*.py|gen*.py) continue ;; esac
+            if grep -q "ErmctInfoInqireService\|EmergencyApp\|getEmrrmRltmUsefulSckbdInfoInqire" "$f" 2>/dev/null; then
+              SRC="$f"; break
+            fi
+          done
           if [ -z "$SRC" ]; then
-            SRC=$(grep -l -m1 "EmergencyApp\|ErmctInfoInqireService" *.py 2>/dev/null | grep -v '^main.py$' | head -1 || true)
+            SRC="$(ls -S1 *.py 2>/dev/null | grep -v '^main\.py$' | head -1 || true)"
           fi
-          if [ -z "$SRC" ]; then
-            echo "::error::앱 소스(.py)를 찾지 못했습니다. ER_monitor__final_.py 를 저장소 루트에 업로드하십시오."
-            exit 1
+          if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
+            echo "::error::앱 소스(.py)를 찾지 못했습니다. 원본 .py 를 저장소 루트에 업로드하십시오."
+            ls -al; exit 1
+          fi
+          # 하위폴더에 있으면 루트로 이동
+          if [ "$(dirname "$SRC")" != "." ]; then
+            mv -f "$SRC" "./$(basename "$SRC")"; SRC="./$(basename "$SRC")"
+          fi
+          SRC="$(basename "$SRC")"
+          # 공백/괄호/비ASCII → 밑줄 치환 (buildozer·p4a 경로 오류 방지)
+          SAFE="$(printf '%s' "$SRC" | sed 's/[^A-Za-z0-9._-]/_/g')"
+          case "$SAFE" in *.py) ;; *) SAFE="${SAFE}.py" ;; esac
+          if [ "$SRC" != "$SAFE" ]; then
+            echo "[detect] 파일명 안전화: '$SRC' -> '$SAFE'"
+            mv -f "$SRC" "$SAFE"
+            SRC="$SAFE"
           fi
           echo "APP_SRC=$SRC" >> "$GITHUB_ENV"
-          echo "발견: $SRC ($(wc -c < "$SRC") bytes)"
+          echo "[detect] 앱 소스 = $SRC ($(wc -c < "$SRC") bytes)"
 
       # ── 1. 빌드 파일 자동 생성 ─────────────────────────────────
       - name: 빌드 파일 자동 생성
@@ -453,8 +473,10 @@ jobs:
 
           version = 1.0.0
 
-          # Flask/Requests 전체 의존 트리를 명시 → p4a 자동해석 실패 시 원인 즉시 특정
-          requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
+          # Flask/Requests 전체 의존 트리 명시.
+          # markupsafe 는 C확장 포함 → 2.1.5 로 고정 (순수파이썬 폴백이 있는 마지막 계열).
+          # 3.x 또는 미고정 시 p4a 최신판의 --only-binary 정책과 충돌하여 설치 실패.
+          requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe==2.1.5,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
 
           orientation = portrait
           fullscreen = 0
@@ -686,6 +708,7 @@ jobs:
             libtool-bin pkg-config zlib1g-dev libncurses-dev libncursesw5-dev \
             libtinfo6 cmake libffi-dev libssl-dev build-essential ccache \
             patch wget curl lld
+          sudo apt-get install -y libtinfo5 2>/dev/null || true
           if [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
             sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 \
                         /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
@@ -730,7 +753,17 @@ jobs:
           key: bz-${{ runner.os }}-${{ env.P4A_REF }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             bz-${{ runner.os }}-${{ env.P4A_REF }}-
-            bz-${{ runner.os }}-
+
+      - name: 캐시 정합성 검사 (p4a 버전 변경 시 폐기)
+        run: |
+          MARK=.buildozer/.p4a_ref
+          if [ -f "$MARK" ] && [ "$(cat "$MARK")" != "$P4A_REF" ]; then
+            echo "p4a 변경: $(cat "$MARK") -> $P4A_REF — 기존 빌드 산출물 폐기"
+            rm -rf .buildozer/android/platform/build-* \
+                   .buildozer/android/platform/python-for-android
+          fi
+          mkdir -p .buildozer && echo "$P4A_REF" > "$MARK"
+          echo "현재 p4a = $P4A_REF"
 
       # ── 5. 빌드 ────────────────────────────────────────────────
       - name: APK 빌드
@@ -802,6 +835,14 @@ jobs:
               | tail -n 40 || echo "(build.log 없음 — 빌드 이전 단계에서 실패)"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "=== 원인 자동 판별 ==="
+          if grep -q "No matching distribution found" build.log 2>/dev/null; then
+            BADPKG=$(grep -m1 "No matching distribution found for" build.log | sed 's/.*for //')
+            echo "::error::[$BADPKG] 안드로이드용 배포판 없음. buildozer.spec requirements 에서 해당 패키지를 순수파이썬 버전으로 고정하거나 제거하십시오."
+          fi
+          if grep -q "BuildDependencyInstallError\|cannot import name .*pip._internal" build.log 2>/dev/null; then
+            echo "::error::p4a 최신판의 hostpython/pip 비호환. Run workflow 에서 p4a_ref 를 v2024.01.21 로 지정하십시오."
+          fi
           echo "=== build.log 마지막 200줄 ==="
           tail -n 200 build.log || true
 
