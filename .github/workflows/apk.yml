@@ -1,0 +1,814 @@
+name: apk
+
+# ═══════════════════════════════════════════════════════════════════
+#  저장소에 이 파일 1개 + 원본 앱 .py 만 있으면 됩니다.
+#  나머지 빌드 파일(main.py / buildozer.spec / 매니페스트 / 패치스크립트)은
+#  이 워크플로가 실행 시점에 자동 생성하고, 저장소에도 자동 커밋합니다.
+# ═══════════════════════════════════════════════════════════════════
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      p4a_ref:
+        description: 'python-for-android 브랜치/태그 (기본 master)'
+        required: false
+        default: 'master'
+      commit_generated:
+        description: '생성된 빌드 파일을 저장소에 커밋 (true/false)'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: write
+
+env:
+  P4A_REF: ${{ github.event.inputs.p4a_ref || 'master' }}
+  COMMIT_GEN: ${{ github.event.inputs.commit_generated || 'true' }}
+  PYTHONUNBUFFERED: '1'
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+
+    steps:
+      # ── 0. 소스 확보 ────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      - name: 원본 앱 소스 탐색
+        run: |
+          set -x
+          ls -al
+          SRC=$(ls -1 ER_monitor*.py 2>/dev/null | head -1 || true)
+          if [ -z "$SRC" ]; then
+            SRC=$(grep -l -m1 "EmergencyApp\|ErmctInfoInqireService" *.py 2>/dev/null | grep -v '^main.py$' | head -1 || true)
+          fi
+          if [ -z "$SRC" ]; then
+            echo "::error::앱 소스(.py)를 찾지 못했습니다. ER_monitor__final_.py 를 저장소 루트에 업로드하십시오."
+            exit 1
+          fi
+          echo "APP_SRC=$SRC" >> "$GITHUB_ENV"
+          echo "발견: $SRC ($(wc -c < "$SRC") bytes)"
+
+      # ── 1. 빌드 파일 자동 생성 ─────────────────────────────────
+      - name: 빌드 파일 자동 생성
+        run: |
+          set -e
+          mkdir -p .github/workflows src/android tools
+
+          echo "[gen] main.py"
+          cat > 'main.py' <<'__EMB_MAIN_PY__'
+          # -*- coding: utf-8 -*-
+          """
+          main.py — APK 진입점 부트스트랩
+            1) 비정상 종료(SIGSEGV/ABRT 포함) 즉시 파악용 실시간 로그 (무버퍼 + faulthandler)
+            2) Android 런타임 권한 자동 획득 (일반 + 특수권한 인텐트)
+            3) 필수 요소 자동 점검 → 없으면 자동 다운로드 (한글폰트 폴백)
+            4) 기본 입출력 폴더 = /sdcard/Download (미지정 시)
+            5) 원본 앱(ER_monitor__final_.py)을 __main__ 으로 실행
+          """
+          import os
+          import sys
+          import time
+          import atexit
+          import faulthandler
+          import threading
+          import traceback
+
+          APP_SRC = 'ER_monitor__final_.py'
+          BOOT_TAG = 'BOOT'
+          _T0 = time.time()
+
+          # ══════════════════════════════════════════════════════════════════
+          #  0. 로그 디렉터리 결정 (미지정 시 Download 우선)
+          # ══════════════════════════════════════════════════════════════════
+          _IS_ANDROID = hasattr(sys, 'getandroidapilevel')
+
+          def _writable(d):
+              try:
+                  os.makedirs(d, exist_ok=True)
+                  p = os.path.join(d, '.wtest')
+                  with open(p, 'w') as f:
+                      f.write('x')
+                  os.remove(p)
+                  return True
+              except Exception:
+                  return False
+
+          def _pick_io_dir():
+              env = os.environ.get('ERMON_IO_DIR')
+              cands = ([env] if env else []) + [
+                  '/sdcard/Download',                 # 디폴트 입출력 폴더
+                  '/storage/emulated/0/Download',
+              ]
+              try:
+                  from jnius import autoclass
+                  _PA = autoclass('org.kivy.android.PythonActivity')
+                  _ext = _PA.mActivity.getExternalFilesDir(None)
+                  if _ext:
+                      cands.append(_ext.getAbsolutePath())
+              except Exception:
+                  pass
+              cands += ['/data/local/tmp', os.path.expanduser('~'), '/tmp']
+              for d in cands:
+                  if d and _writable(d):
+                      return d
+              return os.getcwd()
+
+          IO_DIR = _pick_io_dir()
+          os.environ.setdefault('ERMON_IO_DIR', IO_DIR)
+          LOG_PATH = os.path.join(IO_DIR, 'ermon_boot.log')
+          FAULT_PATH = os.path.join(IO_DIR, 'ermon_fault.log')
+
+          # ══════════════════════════════════════════════════════════════════
+          #  1. 실시간 로그 (라인마다 flush + fsync → 강제종료에도 손실 없음)
+          # ══════════════════════════════════════════════════════════════════
+          _log_lock = threading.Lock()
+          try:
+              _LOGF = open(LOG_PATH, 'a', buffering=1, encoding='utf-8', errors='replace')
+          except Exception:
+              _LOGF = None
+
+          def blog(msg, tag=BOOT_TAG):
+              line = '%s +%07.3fs [%s] %s' % (
+                  time.strftime('%Y-%m-%d %H:%M:%S'), time.time() - _T0, tag, msg)
+              with _log_lock:
+                  try:
+                      print(line, flush=True)
+                  except Exception:
+                      pass
+                  if _LOGF:
+                      try:
+                          _LOGF.write(line + '\n')
+                          _LOGF.flush()
+                          os.fsync(_LOGF.fileno())
+                      except Exception:
+                          pass
+
+          # 네이티브 크래시(SIGSEGV/SIGABRT/SIGFPE/SIGBUS) 스택 덤프
+          try:
+              _FF = open(FAULT_PATH, 'a', buffering=1)
+              faulthandler.enable(file=_FF, all_threads=True)
+              try:
+                  import signal
+                  faulthandler.register(signal.SIGTERM, file=_FF, all_threads=True, chain=True)
+              except Exception:
+                  pass
+          except Exception as e:
+              blog('faulthandler 비활성: %s' % e, 'WARN')
+
+          def _excepthook(t, v, tb):
+              blog('UNCAUGHT %s: %s' % (t.__name__, v), 'FATAL')
+              for ln in traceback.format_exception(t, v, tb):
+                  blog(ln.rstrip(), 'FATAL')
+          sys.excepthook = _excepthook
+
+          def _thread_excepthook(a):
+              blog('THREAD-UNCAUGHT [%s] %s: %s' % (
+                  getattr(a.thread, 'name', '?'), a.exc_type.__name__, a.exc_value), 'FATAL')
+              for ln in traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback):
+                  blog(ln.rstrip(), 'FATAL')
+          try:
+              threading.excepthook = _thread_excepthook
+          except Exception:
+              pass
+
+          @atexit.register
+          def _bye():
+              blog('프로세스 종료 (uptime=%.3fs)' % (time.time() - _T0), 'EXIT')
+              try:
+                  if _LOGF:
+                      _LOGF.flush()
+                      os.fsync(_LOGF.fileno())
+              except Exception:
+                  pass
+
+          blog('=' * 62)
+          blog('부트스트랩 시작  py=%s' % sys.version.replace('\n', ' '))
+          blog('android=%s  io_dir=%s' % (_IS_ANDROID, IO_DIR))
+          blog('log=%s  fault=%s' % (LOG_PATH, FAULT_PATH))
+          blog('cwd=%s  __file__=%s' % (os.getcwd(), os.path.abspath(__file__)))
+
+          # ══════════════════════════════════════════════════════════════════
+          #  2. 권한 획득
+          # ══════════════════════════════════════════════════════════════════
+          NORMAL_PERMS = [
+              'INTERNET', 'ACCESS_NETWORK_STATE', 'WAKE_LOCK', 'VIBRATE',
+              'POST_NOTIFICATIONS', 'FOREGROUND_SERVICE', 'RECEIVE_BOOT_COMPLETED',
+              'READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE',
+          ]
+
+          def _api_level():
+              try:
+                  return sys.getandroidapilevel()
+              except Exception:
+                  return 0
+
+          def request_runtime_permissions(timeout=25.0):
+              """일반 위험권한 요청 → 승인/거부 결과를 로그로 남김."""
+              if not _IS_ANDROID:
+                  blog('PC 환경 — 권한 요청 생략', 'PERM')
+                  return
+              try:
+                  from android.permissions import request_permissions, check_permission, Permission
+              except Exception as e:
+                  blog('android.permissions 사용 불가: %s' % e, 'PERM')
+                  return
+
+              want, names = [], []
+              for n in NORMAL_PERMS:
+                  p = getattr(Permission, n, None)
+                  if p is None:
+                      blog('미지원 권한 스킵: %s' % n, 'PERM')
+                      continue
+                  try:
+                      if check_permission(p):
+                          blog('이미 승인: %s' % n, 'PERM')
+                          continue
+                  except Exception:
+                      pass
+                  want.append(p)
+                  names.append(n)
+
+              if not want:
+                  blog('추가 요청 필요 권한 없음', 'PERM')
+                  return
+
+              done = threading.Event()
+              result = {}
+
+              def _cb(perms, grants):
+                  for p, g in zip(perms, grants):
+                      result[p] = g
+                  done.set()
+
+              blog('권한 요청: %s' % ','.join(names), 'PERM')
+              try:
+                  request_permissions(want, _cb)
+              except TypeError:
+                  request_permissions(want)
+                  done.set()
+              except Exception as e:
+                  blog('요청 예외: %s' % e, 'PERM')
+                  return
+
+              if not done.wait(timeout):
+                  blog('권한 콜백 타임아웃(%.0fs) — 계속 진행' % timeout, 'PERM')
+                  return
+              for n, p in zip(names, want):
+                  blog('결과 %s = %s' % (n, 'GRANTED' if result.get(p) else 'DENIED'), 'PERM')
+
+
+          def request_all_files_access():
+              """API30+ 전체 파일 접근(MANAGE_EXTERNAL_STORAGE) — /sdcard/Download 사용."""
+              if not _IS_ANDROID or _api_level() < 30:
+                  return
+              try:
+                  from jnius import autoclass
+                  Environment = autoclass('android.os.Environment')
+                  if Environment.isExternalStorageManager():
+                      blog('MANAGE_EXTERNAL_STORAGE 이미 허용', 'PERM')
+                      return
+                  PA = autoclass('org.kivy.android.PythonActivity')
+                  Intent = autoclass('android.content.Intent')
+                  Settings = autoclass('android.provider.Settings')
+                  Uri = autoclass('android.net.Uri')
+                  it = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                              Uri.parse('package:' + PA.mActivity.getPackageName()))
+                  it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  PA.mActivity.startActivity(it)
+                  blog('전체 파일 접근 설정화면 호출', 'PERM')
+              except Exception as e:
+                  blog('전체 파일 접근 요청 실패(무시): %s' % e, 'PERM')
+
+
+          def request_overlay_permission():
+              """SYSTEM_ALERT_WINDOW — 상단 오버레이 기능용."""
+              if not _IS_ANDROID or _api_level() < 23:
+                  return
+              try:
+                  from jnius import autoclass
+                  Settings = autoclass('android.provider.Settings')
+                  PA = autoclass('org.kivy.android.PythonActivity')
+                  act = PA.mActivity
+                  if Settings.canDrawOverlays(act):
+                      blog('SYSTEM_ALERT_WINDOW 이미 허용', 'PERM')
+                      return
+                  Intent = autoclass('android.content.Intent')
+                  Uri = autoclass('android.net.Uri')
+                  it = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                              Uri.parse('package:' + act.getPackageName()))
+                  it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  act.startActivity(it)
+                  blog('오버레이 권한 설정화면 호출', 'PERM')
+              except Exception as e:
+                  blog('오버레이 권한 요청 실패(무시): %s' % e, 'PERM')
+
+
+          def request_battery_exemption():
+              """REQUEST_IGNORE_BATTERY_OPTIMIZATIONS — PiP 백그라운드 유지용."""
+              if not _IS_ANDROID or _api_level() < 23:
+                  return
+              try:
+                  from jnius import autoclass
+                  PA = autoclass('org.kivy.android.PythonActivity')
+                  act = PA.mActivity
+                  Context = autoclass('android.content.Context')
+                  pm = act.getSystemService(Context.POWER_SERVICE)
+                  pkg = act.getPackageName()
+                  if pm.isIgnoringBatteryOptimizations(pkg):
+                      blog('배터리 최적화 이미 제외됨', 'PERM')
+                      return
+                  Intent = autoclass('android.content.Intent')
+                  Settings = autoclass('android.provider.Settings')
+                  Uri = autoclass('android.net.Uri')
+                  it = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                              Uri.parse('package:' + pkg))
+                  it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  act.startActivity(it)
+                  blog('배터리 최적화 제외 요청', 'PERM')
+              except Exception as e:
+                  blog('배터리 최적화 요청 실패(무시): %s' % e, 'PERM')
+
+          # ══════════════════════════════════════════════════════════════════
+          #  3. 필수 요소 자동 점검 / 자동 다운로드
+          # ══════════════════════════════════════════════════════════════════
+          SYSTEM_KR_FONTS = [
+              '/system/fonts/NotoSansCJK-Regular.ttc',
+              '/system/fonts/NotoSansCJKkr-Regular.otf',
+              '/system/fonts/NotoSansKR-Regular.otf',
+              '/system/fonts/NotoSerifCJK-Regular.ttc',
+              '/system/fonts/DroidSansFallback.ttf',
+          ]
+          FONT_URL = ('https://raw.githubusercontent.com/google/fonts/main/ofl/'
+                      'nanumgothic/NanumGothic-Regular.ttf')
+
+          def ensure_assets():
+              """한글 폰트: 시스템 폰트 존재 시 그대로 사용(기본 폰트 정책).
+              하나도 없을 때만 NanumGothic 자동 다운로드 → fonts/NanumGothic.ttf"""
+              for f in SYSTEM_KR_FONTS:
+                  if os.path.exists(f):
+                      blog('시스템 한글폰트 확인: %s' % f, 'ASSET')
+                      return f
+              here = os.path.dirname(os.path.abspath(__file__))
+              for f in (os.path.join(here, 'NanumGothic.ttf'),
+                        os.path.join(here, 'fonts', 'NanumGothic.ttf')):
+                  if os.path.exists(f):
+                      blog('번들 폰트 확인: %s' % f, 'ASSET')
+                      return f
+              dst_dir = os.path.join(IO_DIR, 'ermon_fonts')
+              dst = os.path.join(dst_dir, 'NanumGothic.ttf')
+              if os.path.exists(dst) and os.path.getsize(dst) > 100000:
+                  blog('캐시 폰트 사용: %s' % dst, 'ASSET')
+                  return dst
+              blog('한글폰트 없음 → 자동 다운로드 시도', 'ASSET')
+              try:
+                  os.makedirs(dst_dir, exist_ok=True)
+                  import urllib.request
+                  t = time.time()
+                  urllib.request.urlretrieve(FONT_URL, dst)
+                  blog('폰트 다운로드 완료 %d bytes (%.2fs)' % (
+                      os.path.getsize(dst), time.time() - t), 'ASSET')
+                  return dst
+              except Exception as e:
+                  blog('폰트 다운로드 실패: %s — 기본 폰트로 진행(한글 깨짐 가능)' % e, 'ASSET')
+                  return None
+
+
+          def preflight():
+              """의존 모듈 존재 확인 — 없는 항목을 로그로 즉시 특정."""
+              mods = ['kivy', 'flask', 'requests', 'jnius', 'plyer', 'certifi',
+                      'jinja2', 'werkzeug', 'urllib3']
+              for m in mods:
+                  try:
+                      __import__(m)
+                      v = getattr(sys.modules[m], '__version__', '?')
+                      blog('MOD OK   %-12s %s' % (m, v), 'PRE')
+                  except Exception as e:
+                      blog('MOD FAIL %-12s %s' % (m, e), 'PRE')
+
+          # ══════════════════════════════════════════════════════════════════
+          #  4. 실행
+          # ══════════════════════════════════════════════════════════════════
+          def main():
+              blog('--- 권한 단계 ---')
+              request_runtime_permissions()
+              request_all_files_access()
+              request_overlay_permission()
+              request_battery_exemption()
+
+              blog('--- 자원 점검 단계 ---')
+              fp = ensure_assets()
+              if fp:
+                  os.environ['ERMON_FONT'] = fp
+              preflight()
+
+              here = os.path.dirname(os.path.abspath(__file__))
+              target = os.path.join(here, APP_SRC)
+              if not os.path.exists(target):
+                  blog('원본 소스 없음: %s' % target, 'FATAL')
+                  blog('디렉터리 내용: %s' % os.listdir(here), 'FATAL')
+                  raise SystemExit(2)
+
+              blog('--- 앱 실행: %s (%d bytes) ---' % (target, os.path.getsize(target)))
+              import runpy
+              try:
+                  runpy.run_path(target, run_name='__main__')
+                  blog('앱 정상 반환')
+              except SystemExit as e:
+                  blog('SystemExit code=%s' % e.code, 'EXIT')
+                  raise
+              except BaseException:
+                  blog('앱 실행 중 예외 — 아래 트레이스백', 'FATAL')
+                  for ln in traceback.format_exc().splitlines():
+                      blog(ln, 'FATAL')
+                  raise
+
+
+          if __name__ == '__main__':
+              main()
+          __EMB_MAIN_PY__
+
+          echo "[gen] buildozer.spec"
+          cat > 'buildozer.spec' <<'__EMB_BUILDOZER_SPEC__'
+          [app]
+
+          # 앱 라벨은 ASCII 고정(빌드 안정성). 한글 라벨 필요 시 strings.xml 오버레이 사용.
+          title = ERMonitor
+          package.name = ermonitor
+          package.domain = org.ermon
+
+          source.dir = .
+          source.include_exts = py,png,jpg,jpeg,ttf,ttc,otf,json,txt,html,css,js
+          source.include_patterns = fonts/*,assets/*
+          source.exclude_dirs = tests,bin,.git,.github,.buildozer,p4a,tools,__pycache__
+          source.exclude_patterns = *.log,*.apk,*.aab,README*.md
+
+          version = 1.0.0
+
+          # Flask/Requests 전체 의존 트리를 명시 → p4a 자동해석 실패 시 원인 즉시 특정
+          requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
+
+          orientation = portrait
+          fullscreen = 0
+          android.allow_backup = True
+
+          # ── Android SDK/NDK ────────────────────────────────────────────────
+          android.api = 34
+          android.minapi = 26
+          android.ndk = 25b
+          android.accept_sdk_license = True
+          android.archs = arm64-v8a,armeabi-v7a
+          android.release_artifact = apk
+          android.debug_artifact = apk
+
+          # ── 권한 ───────────────────────────────────────────────────────────
+          android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,WAKE_LOCK,VIBRATE,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,SYSTEM_ALERT_WINDOW,REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,RECEIVE_BOOT_COMPLETED,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+
+          # ── 매니페스트 보강 ────────────────────────────────────────────────
+          # PiP(supportsPictureInPicture)는 activity 속성이라 p4a 템플릿 패치로 주입
+          # (tools/patch_p4a_manifest.sh — 워크플로에서 자동 실행)
+          android.manifest.launch_mode = singleTask
+          android.extra_manifest_xml = ./src/android/extra_manifest.xml
+          android.extra_manifest_application_arguments = ./src/android/extra_manifest_application_arguments.xml
+
+          # ── p4a ────────────────────────────────────────────────────────────
+          p4a.bootstrap = sdl2
+          # 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
+          p4a.source_dir =
+
+          android.logcat_filters = *:S python:D SDL:D AndroidRuntime:E
+
+          [buildozer]
+          log_level = 2
+          warn_on_root = 0
+          __EMB_BUILDOZER_SPEC__
+
+          echo "[gen] .gitattributes"
+          cat > '.gitattributes' <<'__EMB__GITATTRIBUTES__'
+          * text=auto eol=lf
+          *.sh text eol=lf
+          *.yml text eol=lf
+          *.spec text eol=lf
+          *.py text eol=lf
+          *.ttf binary
+          *.ttc binary
+          *.apk binary
+          __EMB__GITATTRIBUTES__
+
+          echo "[gen] .gitignore"
+          cat > '.gitignore' <<'__EMB__GITIGNORE__'
+          .buildozer/
+          p4a/
+          bin/
+          __pycache__/
+          *.pyc
+          *.log
+          __EMB__GITIGNORE__
+
+          echo "[gen] README_BUILD.md"
+          cat > 'README_BUILD.md' <<'__EMB_README_BUILD_MD__'
+          # APK 빌드
+
+          ## 저장소 배치
+          ```
+          ├─ main.py                      # 진입점(권한/로그/자원확보 → 원본 실행)
+          ├─ ER_monitor__final_.py        # 원본 앱 (파일명 변경 시 워크플로가 자동 감지)
+          ├─ buildozer.spec
+          ├─ .gitattributes / .gitignore
+          ├─ src/android/extra_manifest.xml
+          ├─ src/android/extra_manifest_application_arguments.xml
+          ├─ tools/patch_p4a_manifest.sh  # PiP 속성 주입
+          └─ .github/workflows/build-apk.yml
+          ```
+
+          ## 실행
+          - push(main/master) 또는 Actions → build-apk → Run workflow
+          - 산출물: Artifacts `ermonitor-apk`
+          - `git tag v1.0.0 && git push --tags` → Release 자동 첨부
+
+          ## 로그 경로 (단말)
+          | 파일 | 내용 |
+          |---|---|
+          | `/sdcard/Download/ermon_boot.log` | 부트스트랩·권한·모듈점검·트레이스백 (라인마다 fsync) |
+          | `/sdcard/Download/ermon_fault.log` | SIGSEGV/SIGABRT 네이티브 스택 |
+          | `/sdcard/Download/emergency_crash.log` | 원본 코드 STEP 로그 |
+          | `<앱외부저장>/emergency_app.log` | 앱 로깅 |
+          | `adb logcat -s python:D SDL:D AndroidRuntime:E` | 실시간 |
+
+          ## 주의
+          - 폰트: 시스템 CJK 폰트(NotoSansCJK/DroidSansFallback) 우선 사용. 전무할 때만 NanumGothic 자동 다운로드 → `ERMON_FONT` 환경변수로 전달.
+          - Kivy 라벨의 `★ → ↔` 는 BMP 문자로 시스템 폰트 커버됨. 컬러 이모지(U+1F300~)는 Kivy 렌더 불가 → 텍스트 기호로만 사용할 것.
+          - `/sdcard/Download` 쓰기는 API30+에서 전체 파일 접근 승인 필요. 최초 실행 시 설정화면이 자동으로 뜬다.
+          - PiP는 `minapi=26` 이상 + 매니페스트 패치가 적용되어야 동작.
+          __EMB_README_BUILD_MD__
+
+          echo "[gen] src/android/extra_manifest.xml"
+          cat > 'src/android/extra_manifest.xml' <<'__EMB_SRC_ANDROID_EXTRA_MANIFEST_XML__'
+          <uses-feature android:name="android.software.picture_in_picture" android:required="false" />
+          <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+          <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+          __EMB_SRC_ANDROID_EXTRA_MANIFEST_XML__
+
+          echo "[gen] src/android/extra_manifest_application_arguments.xml"
+          cat > 'src/android/extra_manifest_application_arguments.xml' <<'__EMB_SRC_ANDROID_EXTRA_MANIFEST_APPLICATION_ARGUMENTS_XML__'
+          android:requestLegacyExternalStorage="true"
+          android:usesCleartextTraffic="true"
+          android:largeHeap="true"
+          __EMB_SRC_ANDROID_EXTRA_MANIFEST_APPLICATION_ARGUMENTS_XML__
+
+          echo "[gen] tools/patch_p4a_manifest.sh"
+          cat > 'tools/patch_p4a_manifest.sh' <<'__EMB_TOOLS_PATCH_P4A_MANIFEST_SH__'
+          #!/usr/bin/env bash
+          # p4a 부트스트랩 AndroidManifest 템플릿에 PiP 속성 주입
+          #   android:supportsPictureInPicture="true"
+          #   android:resizeableActivity="true"
+          # 사용법: bash tools/patch_p4a_manifest.sh <p4a_source_dir>
+          set -euo pipefail
+
+          P4A_DIR="${1:?p4a source dir 필요}"
+          LOG="${GITHUB_WORKSPACE:-$PWD}/patch_manifest.log"
+          : > "$LOG"
+
+          log() { echo "[patch] $*" | tee -a "$LOG"; }
+
+          log "p4a dir = $P4A_DIR"
+          mapfile -t TPLS < <(find "$P4A_DIR/pythonforandroid/bootstraps" \
+                                -name 'AndroidManifest.tmpl.xml' | sort)
+
+          if [ "${#TPLS[@]}" -eq 0 ]; then
+            log "FATAL: AndroidManifest.tmpl.xml 을 찾지 못함"
+            find "$P4A_DIR" -maxdepth 4 -type d | head -50 | tee -a "$LOG"
+            exit 1
+          fi
+
+          PATCHED=0
+          for T in "${TPLS[@]}"; do
+            log "대상: $T"
+            if grep -q 'supportsPictureInPicture' "$T"; then
+              log "  → 이미 패치됨, 건너뜀"
+              PATCHED=$((PATCHED+1)); continue
+            fi
+            if ! grep -q 'org.kivy.android.PythonActivity' "$T"; then
+              log "  → PythonActivity 없음, 건너뜀"
+              continue
+            fi
+            cp "$T" "$T.bak"
+            python3 - "$T" <<'PY'
+          import sys, re
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8').read()
+          needle = 'android:name="org.kivy.android.PythonActivity"'
+          add = (needle +
+                 '\n              android:supportsPictureInPicture="true"'
+                 '\n              android:resizeableActivity="true"')
+          if needle not in s:
+              sys.exit('needle not found')
+          s = s.replace(needle, add, 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('patched:', p)
+          PY
+            grep -n 'supportsPictureInPicture\|resizeableActivity' "$T" | tee -a "$LOG"
+            PATCHED=$((PATCHED+1))
+          done
+
+          log "패치 완료 템플릿 수 = $PATCHED"
+          [ "$PATCHED" -gt 0 ] || { log "FATAL: 패치 0건"; exit 1; }
+          __EMB_TOOLS_PATCH_P4A_MANIFEST_SH__
+
+          chmod +x tools/patch_p4a_manifest.sh
+
+          # main.py 진입점을 실제 원본 파일명으로 확정
+          python3 - <<'PYFIX'
+          import os, re
+          src = os.environ['APP_SRC']
+          s = open('main.py', encoding='utf-8').read()
+          s = re.sub(r"^APP_SRC = .*$", "APP_SRC = %r" % src, s, count=1, flags=re.M)
+          open('main.py', 'w', encoding='utf-8').write(s)
+          print('APP_SRC ->', src)
+          PYFIX
+
+          echo "[gen] --- 생성 결과 ---"
+          for f in main.py buildozer.spec .gitattributes .gitignore \
+                   src/android/extra_manifest.xml \
+                   src/android/extra_manifest_application_arguments.xml \
+                   tools/patch_p4a_manifest.sh; do
+            if [ -f "$f" ]; then echo "  OK   $f ($(wc -c < "$f") bytes)";
+            else echo "::error::생성 실패 $f"; exit 1; fi
+          done
+          python3 -m py_compile main.py
+          bash -n tools/patch_p4a_manifest.sh
+          echo "[gen] 검증 통과"
+
+      - name: 생성 파일을 저장소에 커밋
+        if: env.COMMIT_GEN == 'true' && github.event_name != 'pull_request'
+        continue-on-error: true
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A main.py buildozer.spec .gitattributes .gitignore README_BUILD.md \
+                    src/android tools 2>/dev/null || true
+          git update-index --chmod=+x tools/patch_p4a_manifest.sh 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"
+          else
+            git commit -m "chore: 빌드 파일 자동 생성 [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}" || echo "::warning::push 실패(무시하고 빌드 계속)"
+          fi
+
+      # ── 2. 툴체인 ──────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 파이썬 문법 사전 검증
+        run: |
+          python -m py_compile main.py "$APP_SRC"
+          echo "syntax OK"
+
+      - name: 시스템 의존성 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip openjdk-17-jdk python3-pip autoconf automake libtool \
+            libtool-bin pkg-config zlib1g-dev libncurses-dev libncursesw5-dev \
+            libtinfo6 cmake libffi-dev libssl-dev build-essential ccache \
+            patch wget curl lld
+          if [ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
+            sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 \
+                        /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
+          fi
+
+      - name: buildozer 설치
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "buildozer==1.5.0" "Cython==0.29.36" virtualenv \
+                                "sh<2.0" colorama appdirs packaging jinja2 build toml
+          buildozer --version
+
+      # ── 3. p4a 클론 + PiP 매니페스트 패치 ──────────────────────
+      - name: python-for-android 준비 및 PiP 패치
+        run: |
+          set -e
+          rm -rf p4a
+          git clone --depth 1 --branch "$P4A_REF" \
+            https://github.com/kivy/python-for-android.git p4a
+          echo "p4a HEAD: $(git -C p4a rev-parse --short HEAD)"
+          bash tools/patch_p4a_manifest.sh "$GITHUB_WORKSPACE/p4a"
+          python3 - <<'PYP'
+          import os, re
+          p = 'buildozer.spec'
+          s = open(p, encoding='utf-8').read()
+          s = re.sub(r'^p4a\.source_dir\s*=.*$',
+                     'p4a.source_dir = %s' % os.path.join(os.environ['GITHUB_WORKSPACE'], 'p4a'),
+                     s, count=1, flags=re.M)
+          open(p, 'w', encoding='utf-8').write(s)
+          PYP
+          grep -n 'p4a.source_dir' buildozer.spec
+
+      # ── 4. 캐시 ────────────────────────────────────────────────
+      - name: 빌드 캐시
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.gradle
+            ~/.ccache
+            .buildozer
+          key: bz-${{ runner.os }}-${{ env.P4A_REF }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            bz-${{ runner.os }}-${{ env.P4A_REF }}-
+            bz-${{ runner.os }}-
+
+      # ── 5. 빌드 ────────────────────────────────────────────────
+      - name: APK 빌드
+        run: |
+          set -o pipefail
+          export USE_CCACHE=1
+          export CCACHE_DIR=$HOME/.ccache
+          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.daemon=false"
+          buildozer -v android debug 2>&1 | tee build.log
+
+      - name: 산출물/매니페스트 검증
+        run: |
+          ls -alh bin/ || true
+          APK=$(ls bin/*.apk 2>/dev/null | head -1)
+          test -n "$APK" || { echo "::error::APK 미생성"; exit 1; }
+          echo "APK=$APK ($(wc -c < "$APK") bytes)"
+          M=$(find .buildozer -path '*dists*' -name 'AndroidManifest.xml' 2>/dev/null | head -1 || true)
+          if [ -n "$M" ]; then
+            echo "--- $M ---"
+            grep -o 'supportsPictureInPicture="[^"]*"' "$M" \
+              || echo "::warning::PiP 속성 미검출 — patch_manifest.log 확인"
+            grep -o 'android.permission.[A-Z_]*' "$M" | sort -u
+          fi
+          {
+            echo "### 빌드 성공"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "|---|---|"
+            echo "| APK | \`$(basename "$APK")\` |"
+            echo "| 크기 | $(du -h "$APK" | cut -f1) |"
+            echo "| 원본 | \`$APP_SRC\` |"
+            echo "| p4a | $P4A_REF |"
+            echo ""
+            echo "아래 **Artifacts → ermonitor-apk** 에서 내려받으십시오."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ── 6. 결과물 / 로그 업로드 ────────────────────────────────
+      - name: APK 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ermonitor-apk
+          path: bin/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 빌드 로그 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build.log
+            patch_manifest.log
+            .buildozer/android/platform/build-*/build/other_builds/**/*.log
+            .buildozer/android/platform/build-*/dists/*/AndroidManifest.xml
+            .buildozer/android/platform/build-*/dists/*/build/outputs/logs/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 실패 원인 요약
+        if: failure()
+        run: |
+          {
+            echo "### 빌드 실패"
+            echo ""
+            echo "\`\`\`"
+            grep -nE "error:|ERROR|Traceback|FAILED|Exception|No such file" build.log \
+              | tail -n 40 || echo "(build.log 없음 — 빌드 이전 단계에서 실패)"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "=== build.log 마지막 200줄 ==="
+          tail -n 200 build.log || true
+
+      # ── 7. 태그 푸시 시 릴리스 ────────────────────────────────
+      - name: 릴리스 생성
+        if: startsWith(github.ref, 'refs/tags/v') && success()
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/*.apk
+          generate_release_notes: true
