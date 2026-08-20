@@ -15,7 +15,7 @@ import faulthandler
 import threading
 import traceback
 
-APP_SRC = 'ER monitor (final).py'
+APP_SRC = 'ER_monitor__final_.py'
 BOOT_TAG = 'BOOT'
 _T0 = time.time()
 

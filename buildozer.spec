@@ -13,8 +13,10 @@ source.exclude_patterns = *.log,*.apk,*.aab,README*.md
 
 version = 1.0.0
 
-# Flask/Requests 전체 의존 트리를 명시 → p4a 자동해석 실패 시 원인 즉시 특정
-requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
+# Flask/Requests 전체 의존 트리 명시.
+# markupsafe 는 C확장 포함 → 2.1.5 로 고정 (순수파이썬 폴백이 있는 마지막 계열).
+# 3.x 또는 미고정 시 p4a 최신판의 --only-binary 정책과 충돌하여 설치 실패.
+requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe==2.1.5,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
 
 orientation = portrait
 fullscreen = 0
