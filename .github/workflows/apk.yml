@@ -431,11 +431,24 @@ jobs:
               preflight()
 
               here = os.path.dirname(os.path.abspath(__file__))
-              target = os.path.join(here, APP_SRC)
-              if not os.path.exists(target):
-                  blog('원본 소스 없음: %s' % target, 'FATAL')
+              if here not in sys.path:
+                  sys.path.insert(0, here)
+              # p4a 는 app 디렉터리의 .py 를 .pyc 로 치환하므로 두 형태 모두 탐색
+              _base = os.path.splitext(APP_SRC)[0]
+              _pyc = '%s.cpython-%d%d.pyc' % ((_base,) + sys.version_info[:2])
+              _cands = [os.path.join(here, APP_SRC),
+                        os.path.join(here, _base + '.pyc'),
+                        os.path.join(here, '__pycache__', _pyc)]
+              target = None
+              for _c in _cands:
+                  if os.path.exists(_c):
+                      target = _c
+                      break
+              if target is None:
+                  blog('원본 소스 없음 (탐색: %s)' % ' | '.join(_cands), 'FATAL')
                   blog('디렉터리 내용: %s' % os.listdir(here), 'FATAL')
                   raise SystemExit(2)
+              blog('진입점 = %s' % target)
 
               blog('--- 앱 실행: %s (%d bytes) ---' % (target, os.path.getsize(target)))
               import runpy
@@ -476,7 +489,7 @@ jobs:
           # Flask/Requests 전체 의존 트리 명시.
           # markupsafe 는 C확장 포함 → 2.1.5 로 고정 (순수파이썬 폴백이 있는 마지막 계열).
           # 3.x 또는 미고정 시 p4a 최신판의 --only-binary 정책과 충돌하여 설치 실패.
-          requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug,markupsafe==2.1.5,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
+          requirements = python3,kivy,pyjnius,android,plyer,setuptools,flask,jinja2,werkzeug==2.2.3,markupsafe==2.1.5,itsdangerous,click,blinker,requests,urllib3,idna,chardet,charset-normalizer,certifi
 
           orientation = portrait
           fullscreen = 0
@@ -500,6 +513,11 @@ jobs:
           android.manifest.launch_mode = singleTask
 
           # ── p4a ────────────────────────────────────────────────────────────
+          # 아이콘/프리스플래시 (없으면 워크플로가 자동 생성)
+          icon.filename = %(source.dir)s/icon.png
+          presplash.filename = %(source.dir)s/presplash.png
+          android.presplash_color = #0B1220
+
           p4a.bootstrap = sdl2
           # 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
           p4a.source_dir =
@@ -669,6 +687,118 @@ jobs:
           print('APP_SRC ->', src)
           PYFIX
 
+          # ── 아이콘 / 프리스플래시 (저장소에 없으면 자동 생성) ──
+          if [ ! -f icon.png ] || [ ! -f presplash.png ]; then
+            python3 -m pip install --quiet --disable-pip-version-check pillow \
+              || python3 -m pip install --quiet --break-system-packages pillow || true
+            python3 - <<'__EMB_MKICONS_PY__' || true
+          #!/usr/bin/env python3
+          # icon.png (512x512) / presplash.png (1024x1024) 생성. ASCII 전용(폰트 깨짐 방지).
+          import math
+          import os
+
+          from PIL import Image, ImageDraw, ImageFont
+
+          BG = (11, 18, 32)
+          BG2 = (17, 30, 54)
+          RED = (229, 57, 53)
+          CYAN = (34, 211, 238)
+          WHITE = (240, 246, 255)
+
+
+          def font(px):
+              for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+                        '/System/Library/Fonts/Helvetica.ttc'):
+                  if os.path.exists(p):
+                      try:
+                          return ImageFont.truetype(p, px)
+                      except Exception:
+                          pass
+              return ImageFont.load_default()
+
+
+          def vgrad(img, c0, c1):
+              d = ImageDraw.Draw(img)
+              h = img.height
+              for y in range(h):
+                  t = y / max(1, h - 1)
+                  d.line([(0, y), (img.width, y)],
+                         fill=tuple(int(a + (b - a) * t) for a, b in zip(c0, c1)))
+
+
+          def ecg(d, x0, x1, y, amp, w, color):
+              """ASCII 아트 없이 순수 폴리라인으로 심전도 파형."""
+              pts, step = [], max(1, (x1 - x0) // 220)
+              for x in range(x0, x1 + 1, step):
+                  t = (x - x0) / max(1, x1 - x0)
+                  u = (t * 3.0) % 1.0
+                  if   u < 0.30: v = 0.0
+                  elif u < 0.34: v = -0.18
+                  elif u < 0.38: v = 1.0
+                  elif u < 0.42: v = -0.45
+                  elif u < 0.46: v = 0.10
+                  elif u < 0.62: v = 0.0
+                  elif u < 0.72: v = 0.22 * math.sin((u - 0.62) / 0.10 * math.pi)
+                  else:          v = 0.0
+                  pts.append((x, y - v * amp))
+              d.line(pts, fill=color, width=w, joint='curve')
+
+
+          def cross(d, cx, cy, arm, th, color):
+              d.rounded_rectangle([cx - th // 2, cy - arm, cx + th // 2, cy + arm],
+                                  radius=th // 3, fill=color)
+              d.rounded_rectangle([cx - arm, cy - th // 2, cx + arm, cy + th // 2],
+                                  radius=th // 3, fill=color)
+
+
+          def make_icon(path, S=512):
+              img = Image.new('RGB', (S, S), BG)
+              vgrad(img, BG, BG2)
+              d = ImageDraw.Draw(img)
+              m = int(S * 0.055)
+              d.rounded_rectangle([m, m, S - m, S - m], radius=int(S * 0.20),
+                                  outline=(38, 55, 88), width=max(2, S // 128))
+              cross(d, S // 2, int(S * 0.40), int(S * 0.20), int(S * 0.085), RED)
+              ecg(d, int(S * 0.12), int(S * 0.88), int(S * 0.70), S * 0.10,
+                  max(3, S // 64), CYAN)
+              f = font(int(S * 0.13))
+              t = 'ER'
+              bb = d.textbbox((0, 0), t, font=f)
+              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.80)), t, font=f, fill=WHITE)
+              img.save(path, 'PNG')
+              return path
+
+
+          def make_presplash(path, S=1024):
+              img = Image.new('RGB', (S, S), BG)
+              vgrad(img, BG, BG2)
+              d = ImageDraw.Draw(img)
+              cross(d, S // 2, int(S * 0.36), int(S * 0.14), int(S * 0.058), RED)
+              ecg(d, int(S * 0.10), int(S * 0.90), int(S * 0.56), S * 0.075,
+                  max(3, S // 128), CYAN)
+              f1, f2 = font(int(S * 0.11)), font(int(S * 0.040))
+              for txt, fnt, y, col in (('ER MONITOR', f1, 0.63, WHITE),
+                                       ('EMERGENCY ROOM STATUS', f2, 0.75, (150, 170, 200))):
+                  bb = d.textbbox((0, 0), txt, font=fnt)
+                  d.text(((S - bb[2] + bb[0]) / 2, int(S * y)), txt, font=fnt, fill=col)
+              img.save(path, 'PNG')
+              return path
+
+          make_icon('icon.png')
+          make_presplash('presplash.png')
+          print('[gen] icon.png / presplash.png 생성')
+          __EMB_MKICONS_PY__
+          else
+            echo "[gen] icon.png / presplash.png 기존 파일 사용"
+          fi
+          if [ -f icon.png ] && [ -f presplash.png ]; then
+            echo "[gen] 아이콘 준비 완료 (icon=$(wc -c < icon.png) presplash=$(wc -c < presplash.png) bytes)"
+          else
+            echo "::warning::아이콘 생성 실패 — buildozer.spec 에서 해당 항목 제거 후 계속"
+            sed -i '/^icon\.filename/d;/^presplash\.filename/d;/^android\.presplash_color/d' buildozer.spec
+          fi
+
           echo "[gen] --- 생성 결과 ---"
           for f in main.py buildozer.spec .gitattributes .gitignore \
                    src/android/extra_manifest.xml \
@@ -688,7 +818,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A main.py buildozer.spec .gitattributes .gitignore README_BUILD.md \
-                    src/android tools 2>/dev/null || true
+                    icon.png presplash.png src/android tools 2>/dev/null || true
           git update-index --chmod=+x tools/patch_p4a_manifest.sh 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음 — 커밋 생략"
