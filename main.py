@@ -344,11 +344,24 @@ def main():
     preflight()
 
     here = os.path.dirname(os.path.abspath(__file__))
-    target = os.path.join(here, APP_SRC)
-    if not os.path.exists(target):
-        blog('원본 소스 없음: %s' % target, 'FATAL')
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    # p4a 는 app 디렉터리의 .py 를 .pyc 로 치환하므로 두 형태 모두 탐색
+    _base = os.path.splitext(APP_SRC)[0]
+    _pyc = '%s.cpython-%d%d.pyc' % ((_base,) + sys.version_info[:2])
+    _cands = [os.path.join(here, APP_SRC),
+              os.path.join(here, _base + '.pyc'),
+              os.path.join(here, '__pycache__', _pyc)]
+    target = None
+    for _c in _cands:
+        if os.path.exists(_c):
+            target = _c
+            break
+    if target is None:
+        blog('원본 소스 없음 (탐색: %s)' % ' | '.join(_cands), 'FATAL')
         blog('디렉터리 내용: %s' % os.listdir(here), 'FATAL')
         raise SystemExit(2)
+    blog('진입점 = %s' % target)
 
     blog('--- 앱 실행: %s (%d bytes) ---' % (target, os.path.getsize(target)))
     import runpy
