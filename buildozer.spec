@@ -35,11 +35,9 @@ android.debug_artifact = apk
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,WAKE_LOCK,VIBRATE,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,SYSTEM_ALERT_WINDOW,REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,RECEIVE_BOOT_COMPLETED,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
 
 # ── 매니페스트 보강 ────────────────────────────────────────────────
-# PiP(supportsPictureInPicture)는 activity 속성이라 p4a 템플릿 패치로 주입
+# PiP / uses-feature / application 속성 전부 p4a 템플릿 패치로 주입
 # (tools/patch_p4a_manifest.sh — 워크플로에서 자동 실행)
 android.manifest.launch_mode = singleTask
-android.extra_manifest_xml = ./src/android/extra_manifest.xml
-android.extra_manifest_application_arguments = ./src/android/extra_manifest_application_arguments.xml
 
 # ── p4a ────────────────────────────────────────────────────────────
 p4a.bootstrap = sdl2
