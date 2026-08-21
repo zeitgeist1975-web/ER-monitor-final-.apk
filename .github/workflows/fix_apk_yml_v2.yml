@@ -1,0 +1,205 @@
+name: apk.yml 직접 보정
+
+# 업로드(push) 즉시 자동 실행. 수동 조작 불필요.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fix-apk-yml-direct
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 사전 진단
+        run: |
+          F=.github/workflows/apk.yml
+          {
+            echo "## apk.yml 직접 보정"
+            echo ""
+            if [ -f "$F" ]; then
+              echo "- 파일: \`$F\` ($(wc -c < "$F") bytes)"
+              printf -- "- CRLF 포함: %s\n" "$(grep -qU $'\r' "$F" && echo YES || echo no)"
+              printf -- "- extra_manifest 행: %s\n" "$(grep -c 'android\.extra_manifest' "$F" || true)"
+              printf -- "- 패치스크립트 heredoc: %s\n" "$(grep -c '__EMB_TOOLS_PATCH_P4A_MANIFEST_SH__' "$F" || true)"
+            else
+              echo "- **오류**: \`$F\` 없음"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ -f "$F" ]
+
+      - name: apk.yml 재작성
+        id: rewrite
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, sys
+
+          F = '.github/workflows/apk.yml'
+          raw = open(F, 'rb').read().decode('utf-8')
+          crlf = '\r\n' in raw
+          s = raw.replace('\r\n', '\n')
+          orig = s
+
+          NEW = r'''#!/usr/bin/env bash
+          # p4a AndroidManifest.tmpl.xml 직접 패치 + 렌더 검증
+          # buildozer 1.5.0 의 --extra-manifest-* 인용부호 버그를 쓰지 않고
+          # 템플릿의 jinja 플레이스홀더를 직접 치환한다.
+          set -euo pipefail
+          P4A="${1:?p4a dir}"; R="${GITHUB_WORKSPACE:-$PWD}"
+          X="$R/src/android/extra_manifest.xml"; A="$R/src/android/extra_manifest_application_arguments.xml"
+          [ -f "$X" ] && [ -f "$A" ] || { echo "::error::extra_manifest 파일 없음"; exit 1; }
+          mapfile -t T < <(find "$P4A/pythonforandroid/bootstraps" -name AndroidManifest.tmpl.xml | sort)
+          [ "${#T[@]}" -gt 0 ] || { echo "::error::템플릿 없음"; exit 1; }
+          SDL2=""
+          for t in "${T[@]}"; do
+            EXTRA_XML="$X" EXTRA_APP="$A" python3 - "$t" <<'PY'
+          import os,re,sys
+          p=sys.argv[1]; s=o=open(p,encoding='utf-8').read()
+          if 'supportsPictureInPicture' not in s:
+              s=re.sub(r'(<activity\s+android:name="(?:\{\{\s*args\.android_entrypoint\s*\}\}|org\.kivy\.android\.PythonActivity)")',
+                       r'\1\n                  android:supportsPictureInPicture="true"\n                  android:resizeableActivity="true"',s,1)
+          s=re.sub(r'\{\{\s*args\.extra_manifest_xml\s*\}\}',
+                   lambda m:open(os.environ['EXTRA_XML'],encoding='utf-8').read().strip(),s)
+          s=re.sub(r'\{\{\s*args\.extra_manifest_application_arguments\s*\}\}',
+                   lambda m:' '.join(l.strip() for l in open(os.environ['EXTRA_APP'],encoding='utf-8') if l.strip() and l.strip()[0]!='#'),s)
+          if s!=o: open(p+'.bak','w',encoding='utf-8').write(o); open(p,'w',encoding='utf-8').write(s)
+          print('[patch]',p)
+          PY
+            case "$t" in */bootstraps/sdl2/*) SDL2="$t";; esac
+          done
+          [ -n "$SDL2" ] || { echo "::error::sdl2 템플릿 없음"; exit 1; }
+          for k in supportsPictureInPicture requestLegacyExternalStorage picture_in_picture; do
+            grep -q "$k" "$SDL2" || { echo "::error::sdl2 $k 미적용"; exit 1; }; done
+          grep -q extra_manifest "$SDL2" && { echo "::error::플레이스홀더 잔존"; exit 1; }
+          python3 - "$SDL2" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          p = sys.argv[1]; raw = open(p, encoding='utf-8').read()
+          try:
+              import jinja2
+          except ImportError:
+              print('[verify] jinja2 없음 - 렌더 검증 생략'); sys.exit(0)
+          class Nil:
+              def __getattr__(s,k): return Nil()
+              def __iter__(s): return iter(())
+              def __bool__(s): return False
+              def __str__(s): return ''
+              def __getitem__(s,k): return Nil()
+          class Args(Nil):
+              numeric_version='1'; version='1.0.0'; package='org.ermon.ermonitor'
+              android_entrypoint='org.kivy.android.PythonActivity'
+              android_apptheme='@android:style/Theme.NoTitleBar'
+              activity_launch_mode='singleTask'; allow_backup='true'; window=True
+              min_sdk_version=26; android_api=34; permissions=[]; orientation=['portrait']
+              service_class_name='org.kivy.android.PythonService'
+              extra_manifest_xml=''; extra_manifest_application_arguments=''
+          out = jinja2.Environment(undefined=jinja2.ChainableUndefined).from_string(raw).render(
+              args=Args(), debug=True, url_scheme='')
+          try:
+              ET.fromstring(out); print('[verify] AndroidManifest 렌더 파싱 OK')
+          except ET.ParseError as e:
+              ln = e.position[0]; L = out.splitlines()
+              print('::error::AndroidManifest 렌더 파싱 실패: %s' % e)
+              for i in range(max(0,ln-6), min(len(L), ln+5)):
+                  print('%s%5d | %s' % ('>>' if i+1==ln else '  ', i+1, L[i]))
+              sys.exit(1)
+          PY
+          echo "[patch] 완료"'''
+          NEW = [l[10:] if l.startswith(' ' * 10) else l for l in NEW.split('\n')]
+
+          log = []
+
+          # 1) buildozer.spec 헤리독 안의 extra_manifest 2줄 삭제
+          n1 = len(re.findall(r'(?m)^[ \t]*android\.extra_manifest_\w+[ \t]*=.*$', s))
+          s = re.sub(r'(?m)^[ \t]*android\.extra_manifest_\w+[ \t]*=.*\n', '', s)
+          log.append('spec extra_manifest 행 삭제: %d' % n1)
+
+          # 2) 예전 시도의 잔재 제거
+          n2 = len(re.findall(r'(?m)^[ \t]*bash tools/fix_gen\.sh[ \t]*$', s))
+          s = re.sub(r'(?m)^[ \t]*bash tools/fix_gen\.sh[ \t]*\n', '', s)
+          log.append('fix_gen 호출 제거: %d' % n2)
+
+          # 3) 패치 스크립트 헤리독 본문 교체
+          TOK = '__EMB_TOOLS_PATCH_P4A_MANIFEST_SH__'
+          lines = s.split('\n')
+          start = next((i for i, l in enumerate(lines) if "<<'%s'" % TOK in l), None)
+          if start is None:
+              print('::error::heredoc 시작 미발견: %s' % TOK); sys.exit(1)
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() == TOK), None)
+          if end is None:
+              print('::error::heredoc 종료 미발견: %s' % TOK); sys.exit(1)
+          indent = re.match(r'[ \t]*', lines[start]).group(0)
+          body = [(indent + l) if l else '' for l in NEW]
+          lines[start + 1:end] = body
+          s = '\n'.join(lines)
+          log.append('패치 스크립트 교체: %d행 -> %d행' % (end - start - 1, len(body)))
+
+          if s == orig:
+              print('변경 없음 (이미 적용됨)')
+              open(os.environ['GITHUB_OUTPUT'], 'a').write('changed=0\n')
+              sys.exit(0)
+
+          open(F, 'w', encoding='utf-8', newline='\r\n' if crlf else '\n').write(s)
+          open(os.environ['GITHUB_OUTPUT'], 'a').write('changed=1\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write('\n' + '\n'.join('- ' + x for x in log) + '\n')
+          print('\n'.join(log))
+          PYEOF
+
+      - name: 결과 검증
+        run: |
+          set -e
+          F=.github/workflows/apk.yml
+          python3 -c "import yaml,sys;yaml.safe_load(open('$F',encoding='utf-8'));print('YAML 파싱 OK')"
+          ! grep -q 'android\.extra_manifest' "$F"
+          grep -q 'requestLegacyExternalStorage' "$F"
+          python3 - <<'PYEOF'
+          import re, subprocess, sys
+          TOK = '__EMB_TOOLS_PATCH_P4A_MANIFEST_SH__'
+          L = open('.github/workflows/apk.yml', encoding='utf-8').read().split('\n')
+          a = next(i for i, l in enumerate(L) if "<<'%s'" % TOK in l)
+          b = next(i for i in range(a + 1, len(L)) if L[i].strip() == TOK)
+          ind = re.match(r'[ \t]*', L[a]).group(0)
+          body = '\n'.join(l[len(ind):] if l.startswith(ind) else l for l in L[a + 1:b])
+          open('/tmp/chk.sh', 'w', encoding='utf-8').write(body)
+          r = subprocess.run(['bash', '-n', '/tmp/chk.sh'])
+          print('임베드 스크립트 bash -n:', 'OK' if r.returncode == 0 else 'FAIL')
+          sys.exit(r.returncode)
+          PYEOF
+          echo "검증 통과" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 커밋 및 푸시
+        id: commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f tools/fix_gen.sh
+          git add -A .github/workflows/apk.yml tools
+          if git diff --cached --quiet; then
+            echo "변경 없음 — 커밋 생략"; echo "pushed=0" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "fix: extra_manifest 인용부호 버그 및 sdl2 needle 수정 [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+            echo "pushed=1" >> "$GITHUB_OUTPUT"
+            echo "푸시 완료" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 빌드 자동 실행
+        if: steps.commit.outputs.pushed == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 5
+          if gh workflow run apk.yml --ref "${GITHUB_REF_NAME}"; then
+            echo "빌드 실행 요청 완료" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**빌드 자동 실행 실패 — Actions 탭에서 수동 실행 필요**" >> "$GITHUB_STEP_SUMMARY"
+          fi
