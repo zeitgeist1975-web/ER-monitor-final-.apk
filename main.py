@@ -14,6 +14,7 @@ import atexit
 import faulthandler
 import threading
 import traceback
+re = __import__("re")
 
 APP_SRC = 'ER_monitor__final_.py'
 BOOT_TAG = 'BOOT'
@@ -35,27 +36,35 @@ def _writable(d):
     except Exception:
         return False
 
-def _pick_io_dir():
-    env = os.environ.get('ERMON_IO_DIR')
-    cands = ([env] if env else []) + [
-        '/sdcard/Download',                 # 디폴트 입출력 폴더
-        '/storage/emulated/0/Download',
-    ]
-    try:
-        from jnius import autoclass
-        _PA = autoclass('org.kivy.android.PythonActivity')
-        _ext = _PA.mActivity.getExternalFilesDir(None)
-        if _ext:
-            cands.append(_ext.getAbsolutePath())
-    except Exception:
-        pass
-    cands += ['/data/local/tmp', os.path.expanduser('~'), '/tmp']
-    for d in cands:
-        if d and _writable(d):
-            return d
-    return os.getcwd()
+def _pkg_name():
+    for k in ('ANDROID_PRIVATE', 'ANDROID_ARGUMENT', 'ANDROID_UNPACK'):
+        v = (os.environ.get(k) or '') + '/'
+        m = re.search(r'/(?:data|user/\d+)/(?:data/)?([A-Za-z][\w.]*\.[\w.]+)/', v)
+        if m:
+            return m.group(1)
+    return ''
 
-IO_DIR = _pick_io_dir()
+
+def _io_candidates():
+    env = os.environ.get('ERMON_IO_DIR')
+    c = ([env] if env else []) + ['/sdcard/Download',
+                                  '/storage/emulated/0/Download']
+    pkg = _pkg_name()
+    if pkg:
+        c += ['/sdcard/Android/data/%s/files' % pkg,
+              '/storage/emulated/0/Android/data/%s/files' % pkg]
+    c += [os.environ.get('ANDROID_PRIVATE'), os.environ.get('ANDROID_ARGUMENT'),
+          '/data/local/tmp', os.path.expanduser('~'), '/tmp', os.getcwd()]
+    out = []
+    for d in c:
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+IO_CANDS = _io_candidates()
+IO_WRITABLE = [d for d in IO_CANDS if _writable(d)]
+IO_DIR = IO_WRITABLE[0] if IO_WRITABLE else os.getcwd()
 os.environ.setdefault('ERMON_IO_DIR', IO_DIR)
 LOG_PATH = os.path.join(IO_DIR, 'ermon_boot.log')
 FAULT_PATH = os.path.join(IO_DIR, 'ermon_fault.log')
@@ -102,6 +111,71 @@ def _excepthook(t, v, tb):
     for ln in traceback.format_exception(t, v, tb):
         blog(ln.rstrip(), 'FATAL')
 sys.excepthook = _excepthook
+
+# 쓰기 가능한 모든 후보에 로그 위치 안내 파일을 남긴다(유실 방지).
+for _d in IO_WRITABLE[:5]:
+    try:
+        with open(os.path.join(_d, 'ermon_log_where.txt'), 'w',
+                  encoding='utf-8') as _f:
+            _f.write(LOG_PATH + '\n')
+    except Exception:
+        pass
+
+
+def _relocate_log(prefer='/sdcard/Download'):
+    """권한 획득 후 Download 가 열리면 로그를 그쪽으로 옮긴다."""
+    global _LOGF, LOG_PATH
+    if os.path.dirname(LOG_PATH) == prefer or not _writable(prefer):
+        return
+    try:
+        new = os.path.join(prefer, 'ermon_boot.log')
+        try:
+            data = open(LOG_PATH, encoding='utf-8', errors='replace').read()
+        except Exception:
+            data = ''
+        nf = open(new, 'a', buffering=1, encoding='utf-8', errors='replace')
+        if data:
+            nf.write(data)
+            nf.flush()
+        with _log_lock:
+            try:
+                if _LOGF:
+                    _LOGF.close()
+            except Exception:
+                pass
+            _LOGF = nf
+            LOG_PATH = new
+        os.environ['ERMON_IO_DIR'] = prefer
+        blog('로그 이전 완료 -> %s' % new)
+    except Exception as e:
+        blog('로그 이전 실패: %s' % e, 'WARN')
+
+
+def _show_error_screen(text):
+    """무음 종료 방지 — 오류 내용을 화면에 표시."""
+    try:
+        from kivy.app import App
+        from kivy.uix.label import Label
+        from kivy.uix.scrollview import ScrollView
+        msg = 'LOG: %s\n\n%s' % (LOG_PATH, text)
+
+        class _ErrApp(App):
+            def build(self):
+                lb = Label(text=msg, font_size='12sp', halign='left',
+                           valign='top', size_hint_y=None, padding=(10, 10))
+                fp = os.environ.get('ERMON_FONT')
+                if fp and os.path.exists(fp):
+                    lb.font_name = fp
+                lb.bind(texture_size=lambda i, v: setattr(i, 'height', v[1]))
+                lb.bind(width=lambda i, v: setattr(i, 'text_size', (v - 20, None)))
+                sv = ScrollView()
+                sv.add_widget(lb)
+                return sv
+
+        blog('오류 화면 표시')
+        _ErrApp().run()
+    except Exception as e:
+        blog('오류 화면 표시 실패: %s' % e, 'WARN')
 
 def _thread_excepthook(a):
     blog('THREAD-UNCAUGHT [%s] %s: %s' % (
@@ -336,6 +410,13 @@ def main():
     request_all_files_access()
     request_overlay_permission()
     request_battery_exemption()
+    _relocate_log()
+    blog('IO 후보=%s' % IO_CANDS)
+    blog('쓰기가능=%s' % IO_WRITABLE)
+    blog('로그경로=%s' % LOG_PATH)
+    for _k in ('ANDROID_ARGUMENT', 'ANDROID_PRIVATE', 'ANDROID_UNPACK',
+               'ANDROID_APP_PATH', 'PYTHONHOME', 'PYTHONPATH'):
+        blog('ENV %-16s = %s' % (_k, os.environ.get(_k)))
 
     blog('--- 자원 점검 단계 ---')
     fp = ensure_assets()
@@ -379,4 +460,16 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except SystemExit as _e:
+        if _e.code not in (0, None):
+            _show_error_screen('SystemExit code=%s\n\n%s'
+                               % (_e.code, traceback.format_exc()))
+        raise
+    except BaseException:
+        _tb = traceback.format_exc()
+        for _ln in _tb.splitlines():
+            blog(_ln, 'FATAL')
+        _show_error_screen(_tb)
+        raise
