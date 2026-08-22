@@ -998,6 +998,19 @@ jobs:
                    .buildozer/android/platform/python-for-android
           fi
           mkdir -p .buildozer && echo "$P4A_REF" > "$MARK"
+
+          # requirements 가 바뀌면 pip 설치 결과(python-installs)를 반드시 폐기한다.
+          # restore-keys 로 이전 캐시가 복원되면 새 핀(예: werkzeug==2.2.3)이 무시된다.
+          RMARK=.buildozer/.req_hash
+          REQ_H=$(grep -m1 "^requirements" buildozer.spec | md5sum | cut -c1-16)
+          if [ ! -f "$RMARK" ] || [ "$(cat "$RMARK")" != "$REQ_H" ]; then
+            echo "requirements 변경/미기록 — python-installs, dists 폐기"
+            rm -rf .buildozer/android/platform/build-*/build/python-installs \
+                   .buildozer/android/platform/build-*/dists
+          else
+            echo "requirements 동일 — 캐시 유지 ($REQ_H)"
+          fi
+          echo "$REQ_H" > "$RMARK"
           echo "현재 p4a = $P4A_REF"
 
       # ── 5. 빌드 ────────────────────────────────────────────────
@@ -1036,6 +1049,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ── 6. 결과물 / 로그 업로드 ────────────────────────────────
+      - name: 의존성 정합성 검사
+        if: always()
+        run: |
+          set +e
+          echo "── 번들된 패키지 확인 ──"
+          for d in $(find .buildozer -type d -name site-packages 2>/dev/null) \
+                   $(find .buildozer -type d -path '*python-installs/*' -maxdepth 8 2>/dev/null | head -4); do
+            [ -d "$d/werkzeug" ] || continue
+            V=$(grep -ho "__version__ = \"[^\"]*\"" "$d/werkzeug/__init__.py" 2>/dev/null | head -1)
+            echo "werkzeug @ $d  $V"
+            if grep -q "def url_quote" "$d/werkzeug/urls.py" 2>/dev/null; then
+              echo "  url_quote: 있음 (flask 2.0.3 호환)"
+            else
+              echo "::error::werkzeug 에 url_quote 없음 — flask 2.0.3 과 비호환. 캐시 폐기 필요"
+            fi
+          done
+          grep -m1 "^requirements" buildozer.spec
+
       - name: APK 업로드
         if: always()
         uses: actions/upload-artifact@v4
