@@ -609,7 +609,7 @@ jobs:
           # 아이콘/프리스플래시 (없으면 워크플로가 자동 생성)
           icon.filename = %(source.dir)s/icon.png
           presplash.filename = %(source.dir)s/presplash.png
-          android.presplash_color = #0B1220
+          android.presplash_color = #11161D
 
           p4a.bootstrap = sdl2
           # 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
@@ -786,23 +786,28 @@ jobs:
               || python3 -m pip install --quiet --break-system-packages pillow || true
             python3 - <<'__EMB_MKICONS_PY__' || true
           #!/usr/bin/env python3
-          # icon.png (512x512) / presplash.png (1024x1024) 생성. ASCII 전용(폰트 깨짐 방지).
-          import math
+          # icon.png (512) / presplash.png (1024)
+          # 모티프: 단순화 앰뷸런스(측면 실루엣) + 단순화 조회 목록(행/막대)
+          # 금지: 심전도 파형, 십자가, 원색
           import os
 
-          from PIL import Image, ImageDraw, ImageFont
+          from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-          BG = (11, 18, 32)
-          BG2 = (17, 30, 54)
-          RED = (229, 57, 53)
-          CYAN = (34, 211, 238)
-          WHITE = (240, 246, 255)
+          BG_TOP = (17, 22, 29)
+          BG_BOT = (31, 40, 51)
+          BODY = (222, 228, 236)     # 차체 (오프화이트)
+          BODY_D = (163, 173, 187)
+          SAND = (198, 173, 134)     # 저채도 악센트 스트라이프
+          SLATE = (108, 122, 140)
+          ROW_BG = (52, 64, 79)
+          TEXT = (228, 233, 240)
+          FOG = (146, 159, 175)
 
 
-          def font(px):
-              for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-                        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-                        '/System/Library/Fonts/Helvetica.ttc'):
+          def font(px, bold=True):
+              for p in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold
+                        else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'):
                   if os.path.exists(p):
                       try:
                           return ImageFont.truetype(p, px)
@@ -813,69 +818,108 @@ jobs:
 
           def vgrad(img, c0, c1):
               d = ImageDraw.Draw(img)
-              h = img.height
-              for y in range(h):
-                  t = y / max(1, h - 1)
+              for y in range(img.height):
+                  t = y / max(1, img.height - 1)
                   d.line([(0, y), (img.width, y)],
                          fill=tuple(int(a + (b - a) * t) for a, b in zip(c0, c1)))
 
 
-          def ecg(d, x0, x1, y, amp, w, color):
-              """ASCII 아트 없이 순수 폴리라인으로 심전도 파형."""
-              pts, step = [], max(1, (x1 - x0) // 220)
-              for x in range(x0, x1 + 1, step):
-                  t = (x - x0) / max(1, x1 - x0)
-                  u = (t * 3.0) % 1.0
-                  if   u < 0.30: v = 0.0
-                  elif u < 0.34: v = -0.18
-                  elif u < 0.38: v = 1.0
-                  elif u < 0.42: v = -0.45
-                  elif u < 0.46: v = 0.10
-                  elif u < 0.62: v = 0.0
-                  elif u < 0.72: v = 0.22 * math.sin((u - 0.62) / 0.10 * math.pi)
-                  else:          v = 0.0
-                  pts.append((x, y - v * amp))
-              d.line(pts, fill=color, width=w, joint='curve')
+          def ambulance(img, x, y, w, sup=4):
+              """측면 실루엣. 캡(경사) + 박스 + 스트라이프 + 바퀴. 십자 마킹 없음."""
+              S = img.size[0] * sup
+              lay = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              d = ImageDraw.Draw(lay)
+              X, Y, W = x * sup, y * sup, w * sup
+              H = W * 0.46
+              r = W * 0.045
+
+              # 화물칸(박스)
+              bx0, bx1 = X + W * 0.30, X + W
+              d.rounded_rectangle([bx0, Y, bx1, Y + H], radius=r, fill=BODY + (255,))
+              # 캡(앞부분 경사)
+              d.polygon([(X, Y + H), (X, Y + H * 0.52), (X + W * 0.14, Y + H * 0.20),
+                         (X + W * 0.34, Y + H * 0.20), (X + W * 0.34, Y + H)],
+                        fill=BODY + (255,))
+              # 창문
+              d.polygon([(X + W * 0.055, Y + H * 0.52), (X + W * 0.165, Y + H * 0.27),
+                         (X + W * 0.30, Y + H * 0.27), (X + W * 0.30, Y + H * 0.52)],
+                        fill=SLATE + (255,))
+              # 측면 스트라이프
+              d.rectangle([bx0 + W * 0.03, Y + H * 0.55, bx1 - W * 0.05, Y + H * 0.68],
+                          fill=SAND + (255,))
+              # 지붕 경광등
+              d.rounded_rectangle([X + W * 0.52, Y - H * 0.14, X + W * 0.70, Y],
+                                  radius=r * 0.8, fill=SAND + (255,))
+              # 바퀴
+              for cx in (X + W * 0.24, X + W * 0.78):
+                  rr = W * 0.115
+                  d.ellipse([cx - rr, Y + H - rr * 0.75, cx + rr, Y + H + rr * 1.25],
+                            fill=(24, 30, 38, 255))
+                  d.ellipse([cx - rr * 0.42, Y + H + rr * 0.25 - rr * 0.42,
+                             cx + rr * 0.42, Y + H + rr * 0.25 + rr * 0.42],
+                            fill=BODY_D + (255,))
+              img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
 
 
-          def cross(d, cx, cy, arm, th, color):
-              d.rounded_rectangle([cx - th // 2, cy - arm, cx + th // 2, cy + arm],
-                                  radius=th // 3, fill=color)
-              d.rounded_rectangle([cx - arm, cy - th // 2, cx + arm, cy + th // 2],
-                                  radius=th // 3, fill=color)
+          def listrows(img, x, y, w, rows=3, sup=4):
+              """단순화 조회 목록: 행 배경 + 라벨 블록 + 가용량 막대."""
+              S = img.size[0] * sup
+              lay = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              d = ImageDraw.Draw(lay)
+              X, Y, W = x * sup, y * sup, w * sup
+              rh = W * 0.145
+              gap = rh * 0.42
+              fills = (0.78, 0.46, 0.24)
+              for i in range(rows):
+                  top = Y + i * (rh + gap)
+                  d.rounded_rectangle([X, top, X + W, top + rh], radius=rh * 0.22,
+                                      fill=ROW_BG + (255,))
+                  d.rectangle([X + W * 0.035, top + rh * 0.28,
+                               X + W * 0.30, top + rh * 0.72], fill=FOG + (255,))
+                  bx0 = X + W * 0.36
+                  bw = W * 0.60
+                  d.rectangle([bx0, top + rh * 0.30, bx0 + bw, top + rh * 0.70],
+                              fill=(70, 84, 102, 255))
+                  d.rectangle([bx0, top + rh * 0.30, bx0 + bw * fills[i % 3],
+                               top + rh * 0.70], fill=SAND + (255,))
+              img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
+
+
+          def glow(img, cx, cy, r, a=44):
+              g = Image.new('RGBA', img.size, (0, 0, 0, 0))
+              ImageDraw.Draw(g).ellipse([cx - r, cy - r, cx + r, cy + r], fill=SAND + (a,))
+              img.alpha_composite(g.filter(ImageFilter.GaussianBlur(r * 0.45)))
 
 
           def make_icon(path, S=512):
-              img = Image.new('RGB', (S, S), BG)
-              vgrad(img, BG, BG2)
-              d = ImageDraw.Draw(img)
-              m = int(S * 0.055)
-              d.rounded_rectangle([m, m, S - m, S - m], radius=int(S * 0.20),
-                                  outline=(38, 55, 88), width=max(2, S // 128))
-              cross(d, S // 2, int(S * 0.40), int(S * 0.20), int(S * 0.085), RED)
-              ecg(d, int(S * 0.12), int(S * 0.88), int(S * 0.70), S * 0.10,
-                  max(3, S // 64), CYAN)
-              f = font(int(S * 0.13))
-              t = 'ER'
-              bb = d.textbbox((0, 0), t, font=f)
-              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.80)), t, font=f, fill=WHITE)
-              img.save(path, 'PNG')
+              base = Image.new('RGB', (S, S), BG_TOP)
+              vgrad(base, BG_TOP, BG_BOT)
+              img = base.convert('RGBA')
+              glow(img, int(S * 0.50), int(S * 0.40), int(S * 0.30), 40)
+              ambulance(img, S * 0.195, S * 0.215, S * 0.61)
+              listrows(img, S * 0.205, S * 0.595, S * 0.59, 3)
+              img.convert('RGB').save(path, 'PNG')
               return path
 
 
           def make_presplash(path, S=1024):
-              img = Image.new('RGB', (S, S), BG)
-              vgrad(img, BG, BG2)
+              base = Image.new('RGB', (S, S), BG_TOP)
+              vgrad(base, BG_TOP, BG_BOT)
+              img = base.convert('RGBA')
+              glow(img, int(S * 0.50), int(S * 0.34), int(S * 0.24), 38)
+              ambulance(img, S * 0.290, S * 0.185, S * 0.42)
+              listrows(img, S * 0.305, S * 0.430, S * 0.39, 3)
               d = ImageDraw.Draw(img)
-              cross(d, S // 2, int(S * 0.36), int(S * 0.14), int(S * 0.058), RED)
-              ecg(d, int(S * 0.10), int(S * 0.90), int(S * 0.56), S * 0.075,
-                  max(3, S // 128), CYAN)
-              f1, f2 = font(int(S * 0.11)), font(int(S * 0.040))
-              for txt, fnt, y, col in (('ER MONITOR', f1, 0.63, WHITE),
-                                       ('EMERGENCY ROOM STATUS', f2, 0.75, (150, 170, 200))):
-                  bb = d.textbbox((0, 0), txt, font=fnt)
-                  d.text(((S - bb[2] + bb[0]) / 2, int(S * y)), txt, font=fnt, fill=col)
-              img.save(path, 'PNG')
+              f1, f2 = font(int(S * 0.068)), font(int(S * 0.025), bold=False)
+              t1 = 'E R   M O N I T O R'
+              bb = d.textbbox((0, 0), t1, font=f1)
+              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.665)), t1, font=f1, fill=TEXT + (255,))
+              d.line([(S * 0.36, S * 0.765), (S * 0.64, S * 0.765)],
+                     fill=SAND + (200,), width=max(2, int(S * 0.0032)))
+              t2 = 'EMERGENCY  BED  STATUS'
+              bb = d.textbbox((0, 0), t2, font=f2)
+              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.795)), t2, font=f2, fill=FOG + (255,))
+              img.convert('RGB').save(path, 'PNG')
               return path
 
           make_icon('icon.png')
