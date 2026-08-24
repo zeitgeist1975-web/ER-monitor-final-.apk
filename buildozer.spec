@@ -43,7 +43,7 @@ android.manifest.launch_mode = singleTask
 # 아이콘/프리스플래시 (없으면 워크플로가 자동 생성)
 icon.filename = %(source.dir)s/icon.png
 presplash.filename = %(source.dir)s/presplash.png
-android.presplash_color = #0B1220
+android.presplash_color = #11161D
 
 p4a.bootstrap = sdl2
 # 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
