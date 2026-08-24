@@ -175,7 +175,7 @@ def _dlog(msg):
         ts = '??:??:??.???'
     entry = f'{ts} {msg}'
     _DEBUG_LINES.append(entry)
-    if len(_DEBUG_LINES) > 300:
+    if len(_DEBUG_LINES) >300:
         _DEBUG_LINES.pop(0)
     _log(msg)  # 파일/stdout에도 기록
 
@@ -211,7 +211,7 @@ HTML = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🏥 응급의료기관 정보</title>
+    <title>응급의료기관 정보</title>
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
         body {
@@ -253,6 +253,8 @@ HTML = '''
         }
         select:focus { outline: none; border-color: #667eea; }
         select:disabled { background: #f0f0f0; }
+        .btn { text-align: center; justify-content: center; }
+        button, .sat-btn, .lv-btn { text-align: center; }
         .btn {
             width: 100%;
             padding: 8px 14px;
@@ -270,11 +272,13 @@ HTML = '''
         .btn:disabled { background: #ccc; cursor: not-allowed; }
         .mode-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
         .mode-tab {
-            flex: 1; display: block; text-align: center; margin: 0;
-            padding: 4px 6px; line-height: 1.15;
+            flex: 1; display: flex; align-items: center; justify-content: center;
+            text-align: center; margin: 0;
+            /* select 와 동일 높이: padding 6px 12px + line-height 1.2 + border 2px */
+            padding: 6px 12px; line-height: 1.2;
             border: 2px solid #ddd; border-radius: 10px;
             font-weight: 700; color: #666; cursor: pointer; user-select: none;
-            font-size: clamp(0.95rem, 2.5vw, 1.05rem);
+            font-size: clamp(1rem, 2.5vw, 1.1rem);
         }
         .mode-tab input { display: none; }
         .mode-tab.active { border-color: #667eea; background: #eef1ff; color: #4a5bbf; }
@@ -534,12 +538,13 @@ HTML = '''
 </head>
 <body>
     <div class="container">
-        <h1>🏥 응급의료기관 정보</h1>
+        <h1>응급의료기관 정보</h1>
         <div class="mode-tabs" id="modeTabs">
-            <label class="mode-tab active" data-mode="region">
-                <input type="radio" name="smode" value="region" checked>🗺️ 지역으로</label>
-            <label class="mode-tab" data-mode="name">
-                <input type="radio" name="smode" value="name">🏥 병원명으로</label>
+            <label class="mode-tab active" data-mode="region" style="flex:2 1 0;">
+                <input type="radio" name="smode" value="region" checked>지역 검색</label>
+            <label class="mode-tab" data-mode="name" style="flex:2 1 0;">
+                <input type="radio" name="smode" value="name">병원 검색</label>
+            <button type="button" class="mode-tab" id="resetBtn" style="flex:1 1 0;cursor:pointer;background:#f3f4f6;">초기화</button>
         </div>
         <div id="regionPane">
             <div class="form-group" style="margin-bottom:8px;">
@@ -564,19 +569,20 @@ HTML = '''
                 <button type="button" class="lv-btn" data-lv="기관">기관</button>
                 <button type="button" class="lv-btn active" data-lv="모두">모두</button>
             </div>
-            <button type="button" class="sat-btn" id="satBtn">📊 병상 포화도</button>
+            <button type="button" class="sat-btn" id="satBtn">병상 포화도</button>
         </div>
-        <button class="btn" id="searchBtn" disabled>🔍 병원 검색</button>
-        <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">💾 저장 (단독 HTML — 선택+조회)</button>
-        <button class="btn" id="secBtn" style="margin-top:8px;background:linear-gradient(135deg,#4a5f4a,#2f3f2f);">🧩 표시 항목 · 순서 설정</button>
+        <div style="display:flex;gap:8px;align-items:stretch;">
+            <button class="btn" id="resBtn" style="flex:1 1 0;min-width:0;margin-top:0;white-space:nowrap;overflow:hidden;background:linear-gradient(135deg,#2f6f5f,#1d4c41);">자원 조건</button>
+            <button class="btn" id="searchBtn" style="flex:2 1 0;min-width:0;margin-top:0;">병원 검색</button>
+        </div>
+        <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">저장 (단독 HTML — 선택+조회)</button>
         <div id="results"></div>
         <div class="selected-box" id="selectedBox">
             <div class="selected-title">
                 <span id="selTitle">선택된 병원 (최대 5개)</span>
                 <span style="display:flex;gap:6px;align-items:center;">
-                    <button type="button" class="clear-btn" id="clearSelBtn" disabled>🗑 모두 해제</button>
-                    <button class="btn" style="width:auto; padding:8px 16px; font-size:0.9rem;" id="compareBtn" disabled>
-                        📋 정보보기
+                    <button type="button" class="clear-btn" id="clearSelBtn" disabled>모두 해제</button>
+                    <button class="btn" style="width:auto; padding:8px 16px; font-size:0.9rem;" id="compareBtn" disabled>정보보기
                     </button>
                 </span>
             </div>
@@ -584,10 +590,9 @@ HTML = '''
         </div>
     </div>
 
-    <script>
-        const districts = {{ districts|tojson }};
+    <script>const districts = {{ districts|tojson }};
 
-        // ── 🧩 표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
+        // ──  표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
         var EXSEC = (function () {
             var CATS = ['응급실', '중환자실', '격리진료구역', '입원실', '기타', '의료장비',
                         '중증질환 수용가능', '예외상황'];
@@ -657,7 +662,7 @@ HTML = '''
                     }).join('');
                     wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:340px;'
                         + 'width:88vw;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                        + '<div style="font-weight:700;margin-bottom:6px;">🧩 표시 항목 · 순서</div>'
+                        + '<div style="font-weight:700;margin-bottom:6px;">표시 항목 · 순서</div>'
                         + '<div style="max-height:52vh;overflow:auto;">' + rows + '</div>'
                         + '<div style="display:flex;gap:8px;margin-top:10px;">'
                         + '<button id="secMin" style="flex:1;padding:8px;border:none;border-radius:10px;'
@@ -682,7 +687,7 @@ HTML = '''
                     var dn = t.getAttribute ? t.getAttribute('data-dn') : null;
                     if (up !== null) {
                         var i = parseInt(up);
-                        if (i > 0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
+                        if (i >0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
                         save(c); apply(); build(); return;
                     }
                     if (dn !== null) {
@@ -717,7 +722,7 @@ HTML = '''
             bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
                 + 'background:#c62828;color:#fff;padding:8px;text-align:center;'
                 + 'font-size:0.85rem;font-weight:600;';
-            bar.textContent = '⚠️ 서버 연결 끊김 — Pydroid 3(파이썬 앱)를 다시 열어주세요. 자동 재접속 대기 중...';
+            bar.textContent = ' 서버 연결 끊김 — Pydroid 3(파이썬 앱)를 다시 열어주세요. 자동 재접속 대기 중...';
             document.body.appendChild(bar);
             _reconT = setInterval(async () => {
                 try {
@@ -725,7 +730,7 @@ HTML = '''
                     if (r.ok) {
                         clearInterval(_reconT); _reconT = null;
                         bar.style.background = '#2e7d32';
-                        bar.textContent = '✅ 서버 재연결됨 — 다시 시도합니다';
+                        bar.textContent = ' 서버 재연결됨 — 다시 시도합니다';
                         setTimeout(() => { try { bar.remove(); } catch (e) {} }, 1500);
                         if (after) { try { after(); } catch (e) {} }
                     }
@@ -767,7 +772,7 @@ HTML = '''
             /*SRV-DBG-START*/
             // 요청 폭주 방지: 2초 단위로 모아 1회만 전송
             _dbgBuf.push(m);
-            if (_dbgBuf.length > 40) _dbgBuf.shift();
+            if (_dbgBuf.length >40) _dbgBuf.shift();
             if (_dbgT) return;
             _dbgT = setTimeout(function () {
                 _dbgT = null;
@@ -824,7 +829,7 @@ HTML = '''
             var over  = Math.max(0, Math.min(scale, p) - 100) / scale * 100;
             return '<div class="cap-bar">'
                  + '<i style="width:' + under + '%;background:' + barColor(p) + ';"></i>'
-                 + (over > 0 ? '<b style="width:' + over + '%;"></b>' : '')
+                 + (over >0 ? '<b style="width:' + over + '%;"></b>' : '')
                  + '<span class="cap-tick" style="left:' + tick + '%;"></span></div>';
         }
         function bedTxt(b) {
@@ -835,16 +840,16 @@ HTML = '''
             const toast = document.createElement('div');
             toast.className = 'copied-toast'; toast.textContent = message;
             document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
+            setTimeout(() =>toast.remove(), 3000);
         }
         function restartApp() { location.reload(); }
         function copyErrorToClipboard() {
             const t = document.getElementById('errorText').textContent;
-            navigator.clipboard.writeText(t).then(() => showToast('✅ 복사됨')).catch(() => {
+            navigator.clipboard.writeText(t).then(() =>showToast(' 복사됨')).catch(() => {
                 const ta = document.createElement('textarea');
                 ta.value = t; document.body.appendChild(ta); ta.select();
                 document.execCommand('copy'); document.body.removeChild(ta);
-                showToast('✅ 복사됨');
+                showToast(' 복사됨');
             });
         }
         function showDetailedError(error, context) {
@@ -854,11 +859,11 @@ HTML = '''
                          '스택: ' + ((error && error.stack) || '-'),
                          'UA: ' + navigator.userAgent].join(String.fromCharCode(10));
             resultsDiv.innerHTML =
-                '<div class="error">❌ 조회 중 오류가 발생했습니다</div>'
-              + '<div class="error-detail"><h3>🔍 오류 상세</h3><pre id="errorText">' + esc(txt) + '</pre>'
+                '<div class="error">조회 중 오류가 발생했습니다</div>'
+              + '<div class="error-detail"><h3>오류 상세</h3><pre id="errorText">' + esc(txt) + '</pre>'
               + '<div class="error-actions">'
-              + '<button class="btn-copy" onclick="copyErrorToClipboard()">📋 복사</button>'
-              + '<button class="btn-restart" onclick="restartApp()">🔄 재시작</button></div></div>';
+              + '<button class="btn-copy" onclick="copyErrorToClipboard()">복사</button>'
+              + '<button class="btn-restart" onclick="restartApp()">재시작</button></div></div>';
         }
 
         // 재시도 래퍼: 서버 일시 중단(앱 백그라운드) 대비
@@ -937,12 +942,14 @@ HTML = '''
                 el.classList.toggle('active', el.getAttribute('data-mode') === m);
             });
             regionPane.style.display = (m === 'region') ? 'block' : 'none';
-            namePane.style.display   = (m === 'name')   ? 'block' : 'none';
+            namePane.style.display   = (m === 'name') ? 'block' : 'none';
             searchBtn.style.display  = (m === 'region') ? 'block' : 'none';
             hospitalsFullData = [];
             resultsDiv.innerHTML = '';
+            resSetEnabled(m === 'region');
+            try { document.getElementById('resInfo').textContent = ''; } catch (e) {}
             if (m === 'name') { nameInfo.textContent = ''; loadAllHospitals(); }
-            else { nameInfo.textContent = ''; searchBtn.disabled = !sidoSelect.value; }
+            else { nameInfo.textContent = ''; searchBtn.disabled = false; }
             nsdbg('mode=' + m);
         }
         document.getElementById('modeTabs').addEventListener('change', function (e) {
@@ -959,7 +966,7 @@ HTML = '''
                 });
                 gugunSelect.disabled = false;
             } else { gugunSelect.disabled = true; }
-            if (SEARCH_MODE !== 'name') searchBtn.disabled = !sido;   // 시/도만으로도 조회 가능
+            if (SEARCH_MODE !== 'name') searchBtn.disabled = false;   // 미선택 시 전국 조회
             prefetchRegion();
         });
         gugunSelect.addEventListener('change', () => {
@@ -996,11 +1003,11 @@ HTML = '''
             } catch (err) {
                 nsdbg('roster ERROR ' + ((err && err.message) || err));
                 if (String((err && err.message) || err).match(/fetch|network|Failed/i)) {
-                    resultsDiv.innerHTML = '<div class="error">❌ 앱 서버에 연결할 수 없습니다<br>'
+                    resultsDiv.innerHTML = '<div class="error">앱 서버에 연결할 수 없습니다<br>'
                         + '<span style="font-size:0.85rem;">앱이 백그라운드에서 종료되었을 수 있습니다. '
                         + 'ER Monitor 앱을 다시 실행한 뒤 아래 버튼을 눌러 주세요.</span></div>'
                         + '<div style="text-align:center;margin-top:12px;">'
-                        + '<button class="sat-refresh" onclick="location.reload()">🔄 다시 연결</button></div>';
+                        + '<button class="sat-refresh" onclick="location.reload()">다시 연결</button></div>';
                     startReconnect(function () { location.reload(); });
                 } else {
                     showDetailedError(err, '전국 병원 목록 조회');
@@ -1064,27 +1071,43 @@ HTML = '''
             return p;
         }
         function prefetchRegion() {
-            if (SEARCH_MODE === 'name') return;
-            const s2 = sidoSelect.value;
-            if (!s2) return;
-            try { fetchRegion(s2, gugunSelect.value).catch(function () {}); } catch (e) {}
+            // 불필요 API 호출 금지 — 조회는 [병원 검색] 버튼에서만 수행한다.
+            return;
         }
 
         async function searchHospitals() {
             if (isSearching) return;
             const sido = sidoSelect.value, gugun = gugunSelect.value;
-            if (!sido) { alert('시/도를 선택해주세요.'); return; }
             isSearching = true; searchBtn.disabled = true;
             const t0 = Date.now();
-            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>병원 정보를 검색중입니다...</p></div>';
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>'
+                + (sido ? '병원 정보를 검색중입니다...' : '전국 응급의료기관을 불러오는 중...')
+                + '</p></div>';
+            // ── 시/도 미선택 → 전국 로스터 조회 ──
+            if (!sido) {
+                try {
+                    if (!allHospitals.length) {
+                        /*SRV-ALL2-START*/
+                        const dAll = await fetchJSON('/api/hospitals_all');
+                        /*SRV-ALL2-END*/
+                        if (!dAll.success) throw new Error(dAll.error || '전국 목록 조회 실패');
+                        allHospitals = dAll.hospitals || [];
+                    }
+                    hospitalsFullData = allHospitals.slice();
+                    await resFilterAfterSearch(hospitalsFullData.filter(lvOk), t0);
+                    nsdbg('nationwide n=' + hospitalsFullData.length);
+                } catch (error) {
+                    showDetailedError(error, '전국 병원 목록 조회');
+                } finally { isSearching = false; searchBtn.disabled = false; }
+                return;
+            }
             try {
                 const data = await fetchRegion(sido, gugun);
                 if (data && data.success) {
                     hospitalsFullData = data.hospitals;
-                    displayHospitals(hospitalsFullData.filter(lvOk), Date.now() - t0);
-                    ensureBeds([sido]);
+                    await resFilterAfterSearch(hospitalsFullData.filter(lvOk), t0);
                 } else {
-                    resultsDiv.innerHTML = '<div class="error">❌ 오류: '
+                    resultsDiv.innerHTML = '<div class="error">오류: '
                         + esc((data && data.error) || '알 수 없는 오류') + '</div>';
                 }
             } catch (error) {
@@ -1105,7 +1128,7 @@ HTML = '''
             for (var k in bedBySido) { var m = bedBySido[k].m; if (m && m[hpid]) return m[hpid]; }
             return null;
         }
-        async function ensureBeds(sidos) {
+        async function ensureBeds(sidos, maxN) {
             var uniq = [], seen = {};
             (sidos || []).forEach(function (x) {
                 if (!x || seen[x]) return;
@@ -1116,7 +1139,7 @@ HTML = '''
                 uniq.push(x);
             });
             if (!uniq.length) { paintBeds(); return; }
-            uniq = uniq.slice(0, 6);
+            uniq = uniq.slice(0, maxN || 6);
             await Promise.all(uniq.map(async function (sd) {
                 bedInflight[sd] = 1;
                 try {
@@ -1161,10 +1184,210 @@ HTML = '''
             return '<span class="region-tag">' + esc(h.sido) + ' ' + esc(h.gugun || '-') + '</span><br>';
         }
         var _shown = [];
+        // ══════════════════════════════════════════════════════════════
+        //  자원검색 — CRRT / ECMO / TTM / HBO (AND 조합)
+        //   TTM = 중심체온조절유도기(hvhypoayn), HBO = 고압산소치료기(hvoxyayn)
+        //   지역/등급 선택은 메인화면 옵션을 그대로 따른다.
+        //   병원명 검색 모드에서는 사용하지 않는다(버튼 비활성).
+        // ══════════════════════════════════════════════════════════════
+        var RES_SEL   = {};
+        var RES_ORDER = ['crrt', 'ecmo', 'ttm', 'hbo'];
+        var RES_LABEL = { crrt: 'CRRT', ecmo: 'ECMO', ttm: 'TTM', hbo: 'HBO' };
+        var RES_BUSY  = false;
+
+        function resActive() { return Object.keys(RES_SEL).length >0; }
+        function resKeys() { return RES_ORDER.filter(function (k) { return RES_SEL[k]; }); }
+
+        function resEqOf(h) {
+            var c = bedBySido[h && h.sido];
+            if (!c || !c.m) return null;
+            var b = c.m[h.hpid];
+            return (b && b.eq) ? b.eq : null;
+        }
+        function resOk(h) {
+            var keys = resKeys();
+            if (!keys.length) return true;
+            var eq = resEqOf(h);
+            if (!eq) return false;
+            for (var i = 0; i < keys.length; i++) { if (!eq[keys[i]]) return false; }
+            return true;
+        }
+
+        // 버튼 폭 고정 — 글자가 길어지면 폰트만 줄인다
+        function fitBtnText(el, startRem) {
+            if (!el) return;
+            el.style.fontSize = '';          // ← CSS 기본값으로 원복 후 재측정
+            if (el.scrollWidth <= el.clientWidth + 1) return;
+            var f = startRem || 1.0;
+            el.style.fontSize = f + 'rem';
+            var guard = 0;
+            while (el.scrollWidth >el.clientWidth + 1 && f >0.55 && guard++ < 24) {
+                f = Math.max(0.55, f - 0.04);
+                el.style.fontSize = f.toFixed(2) + 'rem';
+                if (f <= 0.55) break;
+            }
+        }
+        function resPaintBtn() {
+            var b = document.getElementById('resBtn');
+            if (!b) return;
+            var on = resActive();
+            b.textContent = on ? ('자원 조건 (' + resKeys().length + ')') : '자원 조건';
+            b.title = on ? resKeys().map(function (k) { return RES_LABEL[k]; }).join(' + ')
+                           + ' (모두 보유)' : '자원 조건 미설정';
+            b.style.background = on ? 'linear-gradient(135deg,#16a34a,#065f46)'
+                                    : 'linear-gradient(135deg,#2f6f5f,#1d4c41)';
+            fitBtnText(b, 1.0);
+        }
+        function resSetEnabled(on) {
+            var b = document.getElementById('resBtn');
+            if (!b) return;
+            b.disabled = !on;
+            b.style.opacity = on ? '1' : '0.45';
+            b.style.cursor = on ? 'pointer' : 'not-allowed';
+            if (!on) { RES_SEL = {}; }
+            resPaintBtn();
+        }
+
+        // 등급 + 자원 조건을 모두 반영한 단일 렌더 경로
+        // 검색 조건 전체 초기화 (선택된 병원은 유지)
+        function resetSearchConditions() {
+            try {
+                RES_SEL = {};
+                LEVEL_SET = {};
+                if (typeof lvPaint === 'function') lvPaint();
+                sidoSelect.value = '';
+                gugunSelect.innerHTML = '<option value="">시/군/구 (선택 안 하면 시/도 전체)</option>';
+                gugunSelect.disabled = true;
+                hospitalsFullData = [];
+                _shown = [];
+                try { nameQuery.value = ''; nameInfo.textContent = ''; } catch (e) {}
+                try { document.getElementById('resInfo').textContent = ''; } catch (e) {}
+                resultsDiv.innerHTML = '';
+                resPaintBtn();
+                renderSelected();
+            } catch (e) { nsdbg('reset err ' + e); }
+        }
+        try {
+            document.getElementById('resetBtn').onclick = resetSearchConditions;
+        } catch (e) {}
+
+        function renderList() {
+            if (SEARCH_MODE === 'name') { applyNameQuery(); return; }
+            displayHospitals((hospitalsFullData || []).filter(lvOk));
+        }
+
+        function resInfoEl() {
+            var el = document.getElementById('resInfo');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'resInfo';
+                el.style.cssText = 'margin:6px 0 0;font-size:0.85rem;color:#555;';
+                var host = document.getElementById('results');
+                if (host && host.parentNode) host.parentNode.insertBefore(el, host);
+            }
+            return el;
+        }
+
+        // 적용 = 조건 저장만. API 호출·목록 갱신은 [병원 검색] 시 1회만 수행한다.
+        function resApply() {
+            var info = resInfoEl();
+            resPaintBtn();
+            info.textContent = resActive()
+                ? ('자원 조건: ' + resKeys().map(function (k) { return RES_LABEL[k]; }).join(' + ')
+                   + ' (모두 보유) — [병원 검색] 을 누르면 적용됩니다')
+                : '';
+        }
+
+        // 검색 결과에 자원 조건을 반영 (검색 버튼 경로에서만 호출)
+        async function resFilterAfterSearch(list, t0) {
+            var info = resInfoEl();
+            if (!resActive()) {
+                info.textContent = '';
+                displayHospitals(list, t0 ? Date.now() - t0 : undefined);
+                return;
+            }
+            var sidos = [];
+            list.forEach(function (h) {
+                if (h.sido && sidos.indexOf(h.sido) < 0) sidos.push(h.sido);
+            });
+            info.textContent = '장비 정보 조회 중... (' + sidos.length + '개 시/도)';
+            try { await ensureBeds(sidos, 20); } catch (e) {}
+            var unknown = list.filter(function (h) { return !resEqOf(h); }).length;
+            var hit = list.filter(resOk);
+            info.textContent = '자원 ' + resKeys().map(function (k) { return RES_LABEL[k]; }).join(' + ')
+                + ' (모두 보유) -> ' + hit.length + '곳 / 대상 ' + list.length + '곳'
+                + (unknown ? ' · 장비정보 없음 ' + unknown + '곳 제외' : '');
+            displayHospitals(list, t0 ? Date.now() - t0 : undefined);
+        }
+
+        function resPopup() {
+            if (SEARCH_MODE === 'name') return;
+            var old = document.getElementById('resPop');
+            if (old) { old.remove(); return; }
+            var ov = document.createElement('div');
+            ov.id = 'resPop';
+            ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);'
+                + 'z-index:99999;display:flex;align-items:center;justify-content:center;';
+            var box = document.createElement('div');
+            box.style.cssText = 'background:#fff;padding:16px;max-width:340px;width:88%;'
+                + 'border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.35);';
+            box.innerHTML = '<div style="font-weight:800;margin-bottom:4px;">자원 검색</div>'
+                + '<div style="font-size:0.82rem;color:#666;margin-bottom:10px;">'
+                + '선택한 자원을 <b>모두</b>보유한 병원만 표시 (AND)</div>'
+                + '<div id="resBtns" style="display:flex;flex-wrap:wrap;gap:6px;"></div>'
+                + '<div style="display:flex;gap:6px;margin-top:14px;">'
+                + '<button id="resAll" style="flex:1;padding:9px;border:1px solid #ccc;'
+                + 'background:#f3f4f6;font-weight:700;cursor:pointer;">모두</button>'
+                + '<button id="resClear" style="flex:1;padding:9px;border:1px solid #ccc;'
+                + 'background:#f3f4f6;font-weight:700;cursor:pointer;">해제</button>'
+                + '<button id="resDone" style="flex:1.4;padding:9px;border:none;'
+                + 'background:#16a34a;color:#fff;font-weight:800;cursor:pointer;">적용</button>'
+                + '</div>';
+            ov.appendChild(box);
+            document.body.appendChild(ov);
+            function paint() {
+                var wrap = box.querySelector('#resBtns');
+                wrap.innerHTML = '';
+                RES_ORDER.forEach(function (k) {
+                    var b = document.createElement('button');
+                    b.textContent = RES_LABEL[k];
+                    b.style.cssText = 'flex:1 1 44%;padding:12px 4px;font-weight:800;'
+                        + 'border:2px solid ' + (RES_SEL[k] ? '#16a34a' : '#ddd') + ';'
+                        + 'background:' + (RES_SEL[k] ? '#16a34a' : '#fff') + ';'
+                        + 'color:' + (RES_SEL[k] ? '#fff' : '#333') + ';cursor:pointer;';
+                    b.onclick = function () {
+                        if (RES_SEL[k]) { delete RES_SEL[k]; } else { RES_SEL[k] = 1; }
+                        paint();
+                    };
+                    wrap.appendChild(b);
+                });
+            }
+            paint();
+            box.querySelector('#resAll').onclick = function () {
+                RES_ORDER.forEach(function (k) { RES_SEL[k] = 1; }); paint();
+            };
+            box.querySelector('#resClear').onclick = function () { RES_SEL = {}; paint(); };
+            box.querySelector('#resDone').onclick = function () { ov.remove(); resApply(); };
+            ov.onclick = function (e) { if (e.target === ov) ov.remove(); };
+        }
+        try {
+            document.getElementById('resBtn').onclick = resPopup;
+            resPaintBtn();
+        } catch (e) {}
+
         function displayHospitals(hospitals, ms) {
+            // 자원검색 필터 (AND) — 모든 표시 경로에 일괄 적용
+            if (resActive()) {
+                hospitals = (hospitals || []).filter(resOk);
+            }
             _shown = hospitals || [];
             if (!_shown.length) {
-                resultsDiv.innerHTML = '<div class="loading">😔 조건에 맞는 병원이 없습니다.</div>';
+                resultsDiv.innerHTML = '<div class="loading">조건에 맞는 병원이 없습니다.'
+                    + (resActive() ? '<br><span style="font-size:0.85em;">자원 조건: '
+                        + RES_ORDER.filter(function (k) { return RES_SEL[k]; })
+                            .map(function (k) { return RES_LABEL[k]; }).join(' + ')
+                        + ' (모두 보유)</span>' : '')
+                    + '</div>';
                 return;
             }
             const room = MAX_SEL - selectedHospitals.length;
@@ -1174,8 +1397,8 @@ HTML = '''
             const _t = (typeof ms === 'number')
                 ? ' <span style="font-weight:400;color:#999;font-size:0.85em;">(' + (ms / 1000).toFixed(1) + '초)</span>' : '';
             let html = '<div class="res-head"><span>총 ' + _shown.length + '개 병원' + _t + '</span>'
-                + ((notSel.length > 0 && notSel.length <= room)
-                    ? '<button type="button" class="pickall-btn" id="pickAllBtn">✅ 모두 선택 (' + notSel.length + ')</button>' : '')
+                + ((notSel.length >0 && notSel.length <= room)
+                    ? '<button type="button" class="pickall-btn" id="pickAllBtn">모두 선택 (' + notSel.length + ')</button>' : '')
                 + '</div>';
             _shown.forEach(function (h) {
                 const isSel = selectedHospitals.some(function (x) { return x.hpid === h.hpid; });
@@ -1319,7 +1542,7 @@ HTML = '''
             ov.id = 'dtOverlay';
             ov.innerHTML = '<div class="dt-card"><div class="dt-head">'
                 + '<h3>' + (levelBadge[h.level] || '') + esc(h.name) + '</h3>'
-                + '<button class="sat-close" id="dtCloseBtn">✕</button></div>'
+                + '<button class="sat-close" id="dtCloseBtn">닫기</button></div>'
                 + '<div class="dt-body" id="dtBody">'
                 + '<div class="loading"><div class="spinner"></div><p>상세 정보를 불러오는 중...</p></div>'
                 + '</div></div>';
@@ -1376,7 +1599,7 @@ HTML = '''
                           + '<div class="dt-kv"><span>-</span><span>등록된 메시지 없음</span></div></div>')
                     + '<div class="dt-sec"><h4>갱신</h4>' + kv('병상 갱신시각', x.update_time) + '</div>';
             } catch (err) {
-                body.innerHTML = base + '<div class="error">❌ 상세 조회 실패<br><span style="font-size:0.85rem;">'
+                body.innerHTML = base + '<div class="error">상세 조회 실패<br><span style="font-size:0.85rem;">'
                     + esc((err && err.message) || err) + '</span></div>';
             }
         }
@@ -1417,17 +1640,17 @@ HTML = '''
         function satFormulaHtml() {
             return '<div style="background:#fdecea;border:1px solid #e0a0a0;border-radius:8px;'
                  + 'padding:8px 10px;margin-bottom:9px;color:#7a1f1f;">'
-                 + '<b>⚠ 이 점수는 검증된 의료 과밀지표가 아닙니다.</b><br>'
+                 + '<b>이 점수는 검증된 의료 과밀지표가 아닙니다.</b><br>'
                  + 'NEDOCS·EDWIN 은 ED 환자수·중증도·입원대기 환자수·최장 보딩시간·의사 인력 등을 '
                  + '사용해 실제 ED 자료로 개발·검증된 지표입니다. 본 점수는 그 변수들을 전혀 '
                  + '사용하지 않으며, 공공 API 로 얻을 수 있는 <b>병상 가동률만</b>으로 계산한 '
-                 + '<b>자체 설계 heuristic</b> 입니다. 두 계열을 같은 수준으로 해석하지 마십시오.'
+                 + '<b>자체 설계 heuristic</b>입니다. 두 계열을 같은 수준으로 해석하지 마십시오.'
                  + '</div>'
                  + '<b>상대 과밀점수 (자체 설계 · 미검증)</b><br>'
                  + '응급실 병상이 비어 보여도 입원 대기(boarding)가 회전을 막으면 실제 부담은 커집니다. '
                  + '하류 병상 적체를 반영해 응급실 포화도를 보정합니다.<br><br>'
-                 + '<b>[실측값]</b> <code>E</code> 응급실 포화도 · <code>W</code> 일반병실 · '
-                 + '<code>I</code> 중환자실 (각 1 − 가용/기준)<br><br>'
+                 + '<b>[실측값]</b> <code>E</code>응급실 포화도 · <code>W</code>일반병실 · '
+                 + '<code>I</code>중환자실 (각 1 − 가용/기준)<br><br>'
                  + '<b>[설계 상수]</b> — 아래 값은 모두 <u>본 모델이 임의로 정한 값</u>이며, '
                  + '실제 병원 데이터로 calibration·validation 되지 않았습니다.<br>'
                  + '<code>w_W = 0.74, w_I = 0.26</code><br>'
@@ -1446,7 +1669,7 @@ HTML = '''
                  + '하류가 비면(D=0) 점수 = 응급실 포화도와 동일합니다. '
                  + '완전 적체 시 상한은 권역 +54% · 센터 +39% · 기관 +25%.<br><br>'
                  + '<span style="color:#a06000;">※ 값은 <b>단위 없는 상대 점수</b>입니다. '
-                 + '“178점”은 <b>“과밀 178%”나 “업무량 1.78배”가 아니라</b> 같은 시각 다른 병원보다 '
+                 + '“178점”은 <b>“과밀 178%”나 “업무량 1.78배”가 아니라</b>같은 시각 다른 병원보다 '
                  + '높다는 순위 정보로만 사용하십시오. 절대 해석·의사결정 근거로 쓰려면 실제 ED '
                  + '자료를 이용한 calibration 이 선행되어야 합니다.</span>';
         }
@@ -1474,7 +1697,7 @@ HTML = '''
             var mx = 0;
             list.forEach(function (r) { var v = mVal(r); if (v !== null) mx = Math.max(mx, v * 100); });
             var SCALE = Math.max(110, Math.ceil((mx + 8) / 10) * 10);
-            html += '<div class="cap-scale">막대 기준 0 ~ ' + SCALE + '%  |  세로선 = 100%</div>';
+            html += '<div class="cap-scale">막대 기준 0 ~ ' + SCALE + '% |  세로선 = 100%</div>';
             list.forEach(function (r, i) {
                 var v = mVal(r), p = (v === null) ? null : Math.round(v * 100);
                 var c = satColor(p);
@@ -1490,7 +1713,7 @@ HTML = '''
                      +   '<div class="sat-main">'
                      +     '<div class="sat-name">' + badge + esc(r.name)
                      +       ' <span class="sat-pct" style="color:' + c + ';">' + fmtVal(v)
-                     +       (SAT_METRIC === 'load' ? '<span style="font-size:0.7em;color:#999;"> 점</span>' : '')
+                     +       (SAT_METRIC === 'load' ? '<span style="font-size:0.7em;color:#999;">점</span>' : '')
                      +       '</span></div>'
                      +     '<div class="sat-meta">' + esc(r.sido) + ' ' + esc(r.gugun || '-') + ' · ' + detail
                      +       ' <button type="button" class="detail-btn" data-dt="' + esc(r.hpid)
@@ -1522,10 +1745,10 @@ HTML = '''
                 satRender();
             } catch (err) {
                 nsdbg('sat ERROR ' + ((err && err.message) || err));
-                if (body) body.innerHTML = '<div class="error">❌ 병상 포화도 조회 실패<br>'
+                if (body) body.innerHTML = '<div class="error">병상 포화도 조회 실패<br>'
                     + '<span style="font-size:0.85rem;">' + esc((err && err.message) || err) + '</span></div>'
                     + '<div style="text-align:center;margin-top:12px;">'
-                    + '<button class="sat-refresh" id="satRetryBtn">🔄 다시 시도</button></div>';
+                    + '<button class="sat-refresh" id="satRetryBtn">다시 시도</button></div>';
                 if (sub) sub.textContent = '조회 실패 — 다시 시도해 주세요';
                 /*SRV-RECON-START*/
                 if (String((err && err.message) || err).match(/fetch|network|Failed/i))
@@ -1545,30 +1768,30 @@ HTML = '''
                   }).join('');
             ov.innerHTML =
                 '<div class="sat-head">'
-              + '  <div class="sat-head-top">'
-              + '    <div style="min-width:0;"><h2>📊 병상 포화도</h2><div class="sub" id="satSub">조회 중...</div></div>'
-              + '    <div class="sat-actions">'
-              + '      <button class="sat-refresh" id="satRefreshBtn">🔄 갱신</button>'
-              + '      <button class="sat-close" id="satCloseBtn">✕ 닫기</button></div>'
-              + '  </div>'
-              + '  <div class="sat-row" id="satMetrics">'
-              + '    <button type="button" class="mt-btn active" data-mt="er">응급실</button>'
-              + '    <button type="button" class="mt-btn" data-mt="ward">일반병실</button>'
-              + '    <button type="button" class="mt-btn" data-mt="icu">중환자실</button>'
-              + '    <button type="button" class="mt-btn" data-mt="load">과밀지수</button>'
-              + '    <button type="button" class="mt-info" id="satInfoBtn">ⓘ</button>'
-              + '  </div>'
-              + '  <div class="sat-row" id="satLv">'
-              + '    <button type="button" class="lv-btn" data-lv="권역">권역</button>'
-              + '    <button type="button" class="lv-btn" data-lv="센터">센터</button>'
-              + '    <button type="button" class="lv-btn" data-lv="기관">기관</button>'
-              + '    <button type="button" class="lv-btn" data-lv="모두">모두</button>'
-              + '    <button type="button" class="sort-btn" id="satSortBtn">↓ 내림</button>'
-              + '  </div>'
-              + '  <div class="sat-row">'
-              + '    <select id="satSido">' + sidoOpts + '</select>'
-              + '    <select id="satGugun"></select>'
-              + '  </div></div>'
+              + ' <div class="sat-head-top">'
+              + ' <div style="min-width:0;"><h2>병상 포화도</h2><div class="sub" id="satSub">조회 중...</div></div>'
+              + ' <div class="sat-actions">'
+              + ' <button class="sat-refresh" id="satRefreshBtn">갱신</button>'
+              + ' <button class="sat-close" id="satCloseBtn">닫기</button></div>'
+              + ' </div>'
+              + ' <div class="sat-row" id="satMetrics">'
+              + ' <button type="button" class="mt-btn active" data-mt="er">응급실</button>'
+              + ' <button type="button" class="mt-btn" data-mt="ward">일반병실</button>'
+              + ' <button type="button" class="mt-btn" data-mt="icu">중환자실</button>'
+              + ' <button type="button" class="mt-btn" data-mt="load">과밀지수</button>'
+              + ' <button type="button" class="mt-info" id="satInfoBtn">ⓘ</button>'
+              + ' </div>'
+              + ' <div class="sat-row" id="satLv">'
+              + ' <button type="button" class="lv-btn" data-lv="권역">권역</button>'
+              + ' <button type="button" class="lv-btn" data-lv="센터">센터</button>'
+              + ' <button type="button" class="lv-btn" data-lv="기관">기관</button>'
+              + ' <button type="button" class="lv-btn" data-lv="모두">모두</button>'
+              + ' <button type="button" class="sort-btn" id="satSortBtn">↓ 내림</button>'
+              + ' </div>'
+              + ' <div class="sat-row">'
+              + ' <select id="satSido">' + sidoOpts + '</select>'
+              + ' <select id="satGugun"></select>'
+              + ' </div></div>'
               + '<div class="sat-body" id="satBody"></div>';
             document.body.appendChild(ov);
             satFillGugun();
@@ -1659,13 +1882,31 @@ COMPARE_WINDOW_HTML = '''
         * { margin:0; padding:0; box-sizing:border-box; }
         body { font-family: 'Malgun Gothic', sans-serif; background: #f5f5f5; padding: 10px; }
         .header {
-            background: white; padding: 15px; border-radius: 10px;
+            position: relative;
+            background: white; padding: 10px 12px 12px; border-radius: 10px;
             margin-bottom: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;
         }
-        .header h1 { color: #667eea; font-size: {{ title_font_size }}; margin-bottom: 5px; padding-left: 10%; }
+        /* 제목 축소 + 좌우 여백 제거로 정확한 중앙정렬 */
+        .hdr-row { position: relative; display: flex; align-items: center;
+                   justify-content: center; min-height: 2.2em; }
+        .hdr-right { position: absolute; right: 0; top: 50%;
+                     transform: translateY(-50%); display: flex;
+                     align-items: center; gap: 8px; }
+        /* 제목: 축소본의 2배, 채도 +30% (#667eea -> #525DFE) */
+        .header h1 { color: #525DFE; font-size: calc({{ title_font_size }} * 1.24);
+                     margin: 0; padding-left: 0; }
+        .back-sel {
+            position: absolute; top: 6px; left: 6px;
+            background: #BEC0C2; color: #626A75; border: 1px solid #B2B6BA;
+            border-radius: 6px; padding: 2px 7px; font-size: 0.66rem;
+            font-weight: 600; line-height: 1.35; cursor: pointer;
+        }
+        .back-sel:active { background: #e2e6ea; }
         /* 응급의료상황판 폰트 +30% */
         .header h1 .h1-main { font-size: 0.91em; }
-        .header h1 .h1-sub  { font-size: 0.55em; font-weight: normal; color: #555; }
+        .header h1 .h1-sub,
+        .header .hdr-right .h1-sub { font-size: calc({{ title_font_size }} * 1.24 * 0.55);
+                                     font-weight: normal; color: #000; white-space: nowrap; }
         .header .time { color: #666; font-size: {{ base_font_size }}; }
         .comparison-wrapper {
             background: white; border-radius: 10px; padding: 10px;
@@ -1701,6 +1942,13 @@ COMPARE_WINDOW_HTML = '''
             max-width: 150px; overflow: visible;
         }
         .comparison-table thead th:first-child { width: 15%; min-width: 60px; }
+        /* 조회화면 모든 컨트롤 높이 = 즉시 갱신 버튼 높이로 통일 */
+        .refresh-controls button,
+        .refresh-controls select,
+        .refresh-controls input[type="number"] {
+            height: 2.15rem; box-sizing: border-box; padding: 0 8px;
+            line-height: 1; text-align: center; vertical-align: middle;
+        }
         .refresh-controls { 
             display: flex; align-items: center; justify-content: center;
             gap: 4px; margin-top: 4px; flex-wrap: wrap;
@@ -1809,7 +2057,14 @@ COMPARE_WINDOW_HTML = '''
 </head>
 <body>
     <div class="header">
-        <h1><span class="h1-main">응급의료상황판</span><span class="h1-sub">&nbsp;(🕐&nbsp;<span id="queryTime">{{ current_time }}</span>&nbsp;기준)</span></h1>
+        <div class="hdr-row">
+            <h1><span class="h1-main">응급의료상황판</span></h1>
+            <div class="hdr-right">
+                <span class="h1-sub">(<span id="queryTime">{{ current_time }}</span>기준)</span>
+                <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
+                        onclick="ermonBackToSelect()">← 병원 선택</button>
+            </div>
+        </div>
         <div class="refresh-controls">
             <label for="refreshInterval">갱신주기:</label>
             <select id="refreshInterval">
@@ -1823,11 +2078,32 @@ COMPARE_WINDOW_HTML = '''
             </select>
             <button id="refreshNow">즉시 갱신</button>
             <button id="pipBtn">백그라운드</button>
-            <button id="saveHtmlBtn">💾 저장</button>
-            <button id="monitorBtn">🔔 모니터</button>
-            <button id="secBtn">🧩 항목</button>
+            <button id="saveHtmlBtn">저장</button>
+            <button id="monitorBtn">모니터</button>
+            <button id="secBtn">항목</button>
         </div>
         <!-- 갱신 진행바 -->
+        <script>
+        // 병원 선택 화면 복귀 + 안드로이드 백버튼 가로채기(앱 종료 방지)
+        function ermonBackToSelect() {
+            try {
+                if (location.protocol === 'http:' || location.protocol === 'https:') {
+                    location.href = '/';
+                    return;
+                }
+            } catch (e) {}
+            try { if (history.length >1) { history.back(); return; } } catch (e) {}
+            try { window.close(); } catch (e) {}
+        }
+        (function () {
+            try {
+                history.pushState({ ermon: 1 }, '', location.href);
+                window.addEventListener('popstate', function () {
+                    ermonBackToSelect();
+                });
+            } catch (e) {}
+        })();
+        </script>
         <div style="margin: 0 0 0 0; padding-top: 0;">
             <div class="bed-cell" style="max-width: 400px; margin: 0 auto; padding: 0;">
                 <div class="bed-info">
@@ -1836,7 +2112,7 @@ COMPARE_WINDOW_HTML = '''
                         <div class="bed-text-overlay green-text" id="globalRefreshOverlay"
                              style="font-size:0.60em;white-space:nowrap;overflow:visible;
                                     top:50%;transform:translate(-50%,-50%);line-height:1;">
-                             ⏰ <span id="globalRefreshText">3:00</span>
+                              <span id="globalRefreshText">3:00</span>
                         </div>
                     </div>
                 </div>
@@ -1872,7 +2148,7 @@ COMPARE_WINDOW_HTML = '''
             } catch(e){}
         }
 
-        // ── 병상 알림 모니터 (🔔) ──────────────────────────────
+        // ── 병상 알림 모니터 () ──────────────────────────────
         function bedToast(msg, dur) {
             try {
                 const t = document.createElement('div');
@@ -1881,16 +2157,16 @@ COMPARE_WINDOW_HTML = '''
                     + 'background:rgba(30,30,30,0.92);color:#fff;padding:9px 16px;border-radius:20px;'
                     + 'font-size:0.85rem;z-index:9999;max-width:86vw;text-align:center;';
                 document.body.appendChild(t);
-                setTimeout(() => t.remove(), dur || 2500);
+                setTimeout(() =>t.remove(), dur || 2500);
             } catch(e) {}
         }
-        // ── 🔔 병상 모니터 패널 (복수 병원 선택 · 주기 · 방식 · 카운트다운) ──
+        // ──  병상 모니터 패널 (복수 병원 선택 · 주기 · 방식 · 카운트다운) ──
         function _monHospitalsFromPage() {
             const q = new URLSearchParams(location.search);
             let h = q.get('h') || '';
             if (!h) {
                 const hp = q.get('hpids') || '', sd = q.get('sido') || '', gg = q.get('gugun') || '';
-                if (hp && sd && gg) h = hp.split(',').map(x => x + '|' + sd + '|' + gg).join(',');
+                if (hp && sd && gg) h = hp.split(',').map(x =>x + '|' + sd + '|' + gg).join(',');
             }
             const ths = document.querySelectorAll('.comparison-table thead th');
             const names = [];
@@ -1910,7 +2186,7 @@ COMPARE_WINDOW_HTML = '''
             const info = _monHospitalsFromPage();
             let st = { running: false, hospitals: [], mode: 'notify', iv: 180, next_epoch: 0 };
             try { st = await (await fetch('/api/bed_notify_status')).json(); } catch (e) {}
-            const runSet = new Set((st.hospitals || []).map(x => x.hpid));
+            const runSet = new Set((st.hospitals || []).map(x =>x.hpid));
             const wrap = document.createElement('div');
             wrap.id = 'monPanel';
             wrap.style.cssText = 'position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.45);'
@@ -1924,7 +2200,7 @@ COMPARE_WINDOW_HTML = '''
             wrap.innerHTML =
                 '<div style="background:#fff;border-radius:14px;max-width:340px;width:88vw;'
                 + 'padding:16px 16px 12px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                + '<div style="font-weight:700;margin-bottom:8px;">🔔 병상 모니터 '
+                + '<div style="font-weight:700;margin-bottom:8px;">병상 모니터 '
                 + '<span id="monState" style="font-size:0.75rem;color:#667eea;font-weight:600;"></span></div>'
                 + '<div style="max-height:38vh;overflow:auto;">' + rows + '</div>'
                 + '<div style="display:flex;gap:10px;align-items:center;margin:10px 0 4px;font-size:0.85rem;">'
@@ -1940,7 +2216,7 @@ COMPARE_WINDOW_HTML = '''
                 + '<button id="monStop" style="flex:1;padding:9px;border:none;border-radius:10px;'
                 + 'background:#e0e0e0;font-weight:700;">중지</button>'
                 + '<button id="monMiniStyle" title="미니창 스타일" style="padding:9px 12px;'
-                + 'border:none;border-radius:10px;background:#ede7f6;font-weight:700;">⚙</button>'
+                + 'border:none;border-radius:10px;background:#ede7f6;font-weight:700;">스타일</button>'
                 + '<button id="monClose" style="padding:9px 12px;border:none;border-radius:10px;'
                 + 'background:#f5f5f5;">닫기</button></div></div>';
             document.body.appendChild(wrap);
@@ -1982,8 +2258,8 @@ COMPARE_WINDOW_HTML = '''
                 else { try { LIVE_MINI.toggle(); } catch (e) { bedToast('미니창 오류: ' + e.message); } }
                 return;
             }
-            const sel = Array.from(document.querySelectorAll('.mon-hp:checked')).map(c => c.value);
-            const hospitals = info.list.filter(hh => sel.includes(hh.hpid));
+            const sel = Array.from(document.querySelectorAll('.mon-hp:checked')).map(c =>c.value);
+            const hospitals = info.list.filter(hh =>sel.includes(hh.hpid));
             const body = { action: action, hospitals: hospitals, h: info.h,
                            iv: parseInt(document.getElementById('monIv').value),
                            mode: document.getElementById('monMode').value };
@@ -1993,20 +2269,20 @@ COMPARE_WINDOW_HTML = '''
                     body: JSON.stringify(body) });
                 const d = await r.json();
                 bedToast(d.msg || (d.ok ? '완료' : '실패'));
-                if (d.warn) setTimeout(() => bedToast('⚠️ ' + d.warn, 5500), 700);
+                if (d.warn) setTimeout(() =>bedToast(' ' + d.warn, 5500), 700);
             } catch (e) { bedToast('요청 실패: ' + e.message); }
             closeMonitorPanel();
         }
         try { document.getElementById('monitorBtn').onclick = openMonitorPanel; } catch (e) {}
 
-        // ── 💾 저장: 현재 병원 구성 그대로 단독 HTML 다운로드 ─────
+        // ──  저장: 현재 병원 구성 그대로 단독 HTML 다운로드 ─────
         try {
             document.getElementById('saveHtmlBtn').onclick = function () {
                 let h = new URLSearchParams(location.search).get('h') || '';
                 if (!h) {
                     const q = new URLSearchParams(location.search);
                     const hp = q.get('hpids') || '', sd = q.get('sido') || '', gg = q.get('gugun') || '';
-                    if (hp && sd && gg) h = hp.split(',').map(x => x + '|' + sd + '|' + gg).join(',');
+                    if (hp && sd && gg) h = hp.split(',').map(x =>x + '|' + sd + '|' + gg).join(',');
                 }
                 if (!h) { bedToast('저장할 병원 구성이 없습니다.'); return; }
                 const iv = document.getElementById('refreshInterval').value;
@@ -2023,7 +2299,7 @@ COMPARE_WINDOW_HTML = '''
             bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;'
                 + 'background:#c62828;color:#fff;padding:8px;text-align:center;'
                 + 'font-size:0.85rem;font-weight:600;';
-            bar.textContent = '⚠️ 서버 연결 끊김 — Pydroid 3(파이썬 앱)를 다시 열어주세요. 자동 재접속 대기 중...';
+            bar.textContent = ' 서버 연결 끊김 — Pydroid 3(파이썬 앱)를 다시 열어주세요. 자동 재접속 대기 중...';
             document.body.appendChild(bar);
             _reconT = setInterval(async () => {
                 try {
@@ -2031,7 +2307,7 @@ COMPARE_WINDOW_HTML = '''
                     if (r.ok) {
                         clearInterval(_reconT); _reconT = null;
                         bar.style.background = '#2e7d32';
-                        bar.textContent = '✅ 서버 재연결됨 — 다시 시도합니다';
+                        bar.textContent = ' 서버 재연결됨 — 다시 시도합니다';
                         setTimeout(() => { try { bar.remove(); } catch (e) {} }, 1500);
                         if (after) { try { after(); } catch (e) {} }
                     }
@@ -2039,7 +2315,7 @@ COMPARE_WINDOW_HTML = '''
             }, 4000);
         }
 
-        // ── 📺 라이브 미니창 (저장본과 동일: PiP 그래프 · 메인 조회와 완전 동기) ──
+        // ──  라이브 미니창 (저장본과 동일: PiP 그래프 · 메인 조회와 완전 동기) ──
         const LIVE_MINI = (function () {
             var docWin = null, video = null, canvas = null, track = null, canvasTimer = null;
             var lastMs = null, lastTs = '';
@@ -2053,11 +2329,11 @@ COMPARE_WINDOW_HTML = '''
             } catch (e) {}
             // ── 스타일 샘플(프리셋)·투명도·탭 변경 유틸 ──
             var PRESETS = [
-                { name: '검정',   s: { radius: 0,  border: '1px solid #555', bg: 'rgba(0,0,0,0.85)', bgSolid: '#000000', color: '#ffffff', weight: '700', fontSize: 44, opacity: 85 } },
+                { name: '검정', s: { radius: 0,  border: '1px solid #555', bg: 'rgba(0,0,0,0.85)', bgSolid: '#000000', color: '#ffffff', weight: '700', fontSize: 44, opacity: 85 } },
                 { name: '화이트', s: { radius: 10, border: '1px solid #bbb', bg: 'rgba(255,255,255,0.92)', bgSolid: '#f2f2f2', color: '#111111', weight: '700', fontSize: 44, opacity: 92 } },
-                { name: '유리',   s: { radius: 14, border: '1px solid #9ec1d9', bg: 'rgba(210,230,245,0.55)', bgSolid: '#d7e6f2', color: '#0b2b45', weight: '700', fontSize: 44, opacity: 55 } },
-                { name: '고대비', s: { radius: 0,  border: '2px solid #ffffff', bg: 'rgba(0,0,0,0.95)', bgSolid: '#000000', color: '#ffee00', weight: '800', fontSize: 48, opacity: 95 } },
-                { name: '녹색',   s: { radius: 6,  border: '1px solid #00aa55', bg: 'rgba(0,40,25,0.85)', bgSolid: '#002819', color: '#4dff9d', weight: '700', fontSize: 44, opacity: 85 } }
+                { name: '유리', s: { radius: 14, border: '1px solid #9ec1d9', bg: 'rgba(210,230,245,0.55)', bgSolid: '#d7e6f2', color: '#0b2b45', weight: '700', fontSize: 44, opacity: 55 } },
+                { name: '고대비', s: { radius: 0, border: '2px solid #ffffff', bg: 'rgba(0,0,0,0.95)', bgSolid: '#000000', color: '#ffee00', weight: '800', fontSize: 48, opacity: 95 } },
+                { name: '녹색', s: { radius: 6,  border: '1px solid #00aa55', bg: 'rgba(0,40,25,0.85)', bgSolid: '#002819', color: '#4dff9d', weight: '700', fontSize: 44, opacity: 85 } }
             ];
             var presetIdx = 0;
             function styleGet(k) { return STYLE[k]; }
@@ -2065,7 +2341,7 @@ COMPARE_WINDOW_HTML = '''
             var IV_CYCLE = [60000, 180000, 300000, 600000, 0];
             function _ivLabel() {
                 var v = (typeof currentInterval !== 'undefined') ? currentInterval : 0;
-                if (!(v > 0)) return '수동';
+                if (!(v >0)) return '수동';
                 return v >= 60000 ? Math.round(v / 60000) + '분' : Math.round(v / 1000) + '초';
             }
             function setMainInterval(ms) {   // 미니창 ↔ 메인 주기 완전 동기
@@ -2093,7 +2369,7 @@ COMPARE_WINDOW_HTML = '''
                 if (s2.charAt(0) === '#' && s2.length === 7) {
                     var v = parseInt(s2.slice(1), 16);
                     if (!isNaN(v))
-                        return 'rgba(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ',' + a + ')';
+                        return 'rgba(' + ((v >>16) & 255) + ',' + ((v >>8) & 255) + ',' + (v & 255) + ',' + a + ')';
                 }
                 return cs;
             }
@@ -2120,7 +2396,7 @@ COMPARE_WINDOW_HTML = '''
                 let h = q.get('h') || '';
                 if (!h) {
                     const hp = q.get('hpids') || '', sd = q.get('sido') || '', gg = q.get('gugun') || '';
-                    if (hp && sd && gg) h = hp.split(',').map(x => x + '|' + sd + '|' + gg).join(',');
+                    if (hp && sd && gg) h = hp.split(',').map(x =>x + '|' + sd + '|' + gg).join(',');
                 }
                 return h;
             }
@@ -2138,7 +2414,7 @@ COMPARE_WINDOW_HTML = '''
                 if (p >= 0.2) return { bright: '#EDBB4A', dark: '#58400A' };
                 return { bright: '#E05550', dark: '#511210' };
             }
-            function valTxt(a, t) { return (a < 0 ? '-' : a) + '/' + (t > 0 ? t : '-'); }
+            function valTxt(a, t) { return (a < 0 ? '-' : a) + '/' + (t >0 ? t : '-'); }
             async function fetchMetrics() {
                 try {
                     const r = await fetch('/pip_data?h=' + encodeURIComponent(hParam()), { cache: 'no-store' });
@@ -2148,9 +2424,9 @@ COMPARE_WINDOW_HTML = '''
                         var ga = (x.hvgc < 0 && x.hv36 < 0) ? -1 : Math.max(x.hvgc, 0) + Math.max(x.hv36, 0);
                         var gt = Math.max(x.hvgc_t || 0, 0) + Math.max(x.hv36_t || 0, 0);
                         return { name: x.name,
-                                 m: [ { lbl: '응급', a: x.hvec, t: (x.hvec_t > 0 ? x.hvec_t : 0) },
+                                 m: [ { lbl: '응급', a: x.hvec, t: (x.hvec_t >0 ? x.hvec_t : 0) },
                                       { lbl: '입원', a: ga, t: gt },
-                                      { lbl: '중환', a: x.hicu, t: (x.hicu_t > 0 ? x.hicu_t : 0) } ] };
+                                      { lbl: '중환', a: x.hicu, t: (x.hicu_t >0 ? x.hicu_t : 0) } ] };
                     });
                     return;
                 } catch (e) { /* 서버 끊김 → 직접조회 데이터로 폴백 */ }
@@ -2160,7 +2436,7 @@ COMPARE_WINDOW_HTML = '''
                 lastTs = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
                 lastMs = hd.map(function (h) {
                     function pv(p) { return { a: (p && p.avail !== undefined) ? p.avail : -1,
-                                              t: (p && p.total > 0) ? p.total : 0 }; }
+                                              t: (p && p.total >0) ? p.total : 0 }; }
                     var e2 = pv((h.emergency || {}).hvec);
                     var g1 = pv((h.general || {}).hvgc), g2 = pv((h.general || {}).hv36);
                     var ga = (g1.a < 0 && g2.a < 0) ? -1 : Math.max(g1.a, 0) + Math.max(g2.a, 0);
@@ -2185,7 +2461,7 @@ COMPARE_WINDOW_HTML = '''
             function tick(d) {
                 var bar = d.getElementById('lmBar'), cnt = d.getElementById('lmCnt');
                 if (!bar || !cnt) return;
-                if (!(currentInterval > 0) || !nextRefreshTime) {
+                if (!(currentInterval >0) || !nextRefreshTime) {
                     bar.style.width = '100%'; cnt.textContent = '수동'; return;
                 }
                 var remain = Math.max(0, nextRefreshTime - Date.now());
@@ -2193,7 +2469,7 @@ COMPARE_WINDOW_HTML = '''
                 var s = Math.ceil(remain / 1000);
                 cnt.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
                 var ib = d.getElementById('mnIv') || d.getElementById('lmIv');
-                if (ib) ib.textContent = '⏱' + _ivLabel();
+                if (ib) ib.textContent = '' + _ivLabel();
             }
             function renderDoc() {
                 if (!docWin || !lastMs) return;
@@ -2204,7 +2480,7 @@ COMPARE_WINDOW_HTML = '''
                     var ms = H.m;
                     var cols = ms.map(function (m) {
                         var pr = ratioPair(m.a, m.t);
-                        var p = (m.a >= 0 && m.t > 0) ? Math.min(1, m.a / m.t) : 0;
+                        var p = (m.a >= 0 && m.t >0) ? Math.min(1, m.a / m.t) : 0;
                         return '<div style="flex:1;min-width:0;">'
                              + '<div style="height:9px;background:' + pr.dark + ';">'
                              + '<div style="height:100%;width:' + (p * 100) + '%;'
@@ -2226,12 +2502,12 @@ COMPARE_WINDOW_HTML = '''
                  + '<span id="lmCnt" style="font-weight:800;min-width:42px;'
                  + 'text-align:right;">--:--</span>'
                  + '<button id="lmIv" title="갱신 주기 변경(메인과 동기)" style="border:1px solid #000;'
-                 + 'background:#fff;color:#000;font-weight:800;padding:1px 6px;cursor:pointer;">⏱'
+                 + 'background:#fff;color:#000;font-weight:800;padding:1px 6px;cursor:pointer;">'
                  + _ivLabel() + '</button>'
                  + '<button id="lmRef" title="즉시 갱신" style="border:1px solid #000;background:#fff;'
                  + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">⟳</button>'
                  + '<button id="lmCls" title="닫기" style="border:1px solid #000;background:#fff;'
-                 + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">✕</button></div>'
+                 + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">X</button></div>'
                  + '<div style="text-align:right;font-weight:800;'
                  + 'margin-top:3px;">' + lastTs + ' 갱신</div>';
                 tick(docWin.document);
@@ -2260,7 +2536,7 @@ COMPARE_WINDOW_HTML = '''
                     g.fillStyle = STYLE.color;
                     g.font = '800 ' + Math.round(fsName) + 'px sans-serif';
                     var nm = H.name;
-                    while (nm.length > 2 && g.measureText(nm).width > CW - padX * 2) nm = nm.slice(0, -1);
+                    while (nm.length >2 && g.measureText(nm).width >CW - padX * 2) nm = nm.slice(0, -1);
                     g.fillText(nm, padX, y0 + rowH * 0.04);   // 병원명 = 병상정보 위
                     var barH = Math.max(10, rowH * 0.15);
                     var barY = y0 + rowH * 0.44;
@@ -2268,7 +2544,7 @@ COMPARE_WINDOW_HTML = '''
                     ms.forEach(function (m, k) {              // 응급·입원·중환 = 고정 3열
                         var x = padX + colW * k, w = colW - gap;
                         var pr = ratioPair(m.a, m.t);
-                        var p = (m.a >= 0 && m.t > 0) ? Math.min(1, m.a / m.t) : 0;
+                        var p = (m.a >= 0 && m.t >0) ? Math.min(1, m.a / m.t) : 0;
                         g.fillStyle = pr.dark;               // 사용 병상 = 옅은 동일계열
                         g.fillRect(x, barY, w, barH);
                         g.fillStyle = pr.bright;             // 가용 병상 = 밝은색
@@ -2282,9 +2558,9 @@ COMPARE_WINDOW_HTML = '''
                         g.fillText(valTxt(m.a, m.t), x + w, labY);
                     });
                 });
-                var remainMs = (currentInterval > 0 && nextRefreshTime)
+                var remainMs = (currentInterval >0 && nextRefreshTime)
                     ? Math.max(0, nextRefreshTime - Date.now()) : 0;
-                var pct = (currentInterval > 0)
+                var pct = (currentInterval >0)
                     ? Math.max(0, Math.min(1, remainMs / currentInterval)) : 1;
                 var by = CH - hFoot + 8;
                 g.fillStyle = 'rgba(255,255,255,0.22)';
@@ -2292,7 +2568,7 @@ COMPARE_WINDOW_HTML = '''
                 g.fillStyle = STYLE.color;
                 g.fillRect(26, by, (CW - 52) * pct, 12);
                 var sL = Math.ceil(remainMs / 1000);
-                var cdt = (currentInterval > 0)
+                var cdt = (currentInterval >0)
                     ? (Math.floor(sL / 60) + ':' + ('0' + (sL % 60)).slice(-2)) : '수동';
                 g.textBaseline = 'top';
                 g.fillStyle = STYLE.color;
@@ -2360,7 +2636,7 @@ COMPARE_WINDOW_HTML = '''
                     await new Promise(function (res) {   // 첫 프레임 크기 확정 후 PiP 진입 (비율 왜곡 방지)
                         var t0 = Date.now();
                         (function chk() {
-                            if (video.videoWidth > 0 || Date.now() - t0 > 800) res();
+                            if (video.videoWidth >0 || Date.now() - t0 >800) res();
                             else setTimeout(chk, 40);
                         })();
                     });
@@ -2374,13 +2650,13 @@ COMPARE_WINDOW_HTML = '''
                             });
                             navigator.mediaSession.setActionHandler('pause', function () {
                                 try { video.play(); } catch (e) {}
-                                _miniKick();                        // ⏯ = 즉시 갱신
+                                _miniKick();                        //  = 즉시 갱신
                             });
-                            navigator.mediaSession.setActionHandler('nexttrack', function () { cyclePreset(1); });          // ⏭ = 디자인
-                            navigator.mediaSession.setActionHandler('previoustrack', function () { cycleMainInterval(); }); // ⏮ = 주기
+                            navigator.mediaSession.setActionHandler('nexttrack', function () { cyclePreset(1); });          //  = 디자인
+                            navigator.mediaSession.setActionHandler('previoustrack', function () { cycleMainInterval(); }); //  = 주기
                             if (window.MediaMetadata)
                                 navigator.mediaSession.metadata = new MediaMetadata(
-                                    { title: '병상 미니창', artist: '⏯갱신 · ⏮주기 · ⏭디자인 · 크기=핀치' });
+                                    { title: '병상 미니창', artist: '갱신 · 주기 · 디자인 · 크기=핀치' });
                         }
                     } catch (e) {}
                     video.addEventListener('pause', function () { try { video.play(); } catch (e) {} });
@@ -2463,7 +2739,7 @@ COMPARE_WINDOW_HTML = '''
                 }
                 wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:330px;'
                     + 'width:88vw;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                    + '<div style="font-weight:700;margin-bottom:6px;">📺 미니창 스타일</div>'
+                    + '<div style="font-weight:700;margin-bottom:6px;">미니창 스타일</div>'
                     + '<div style="display:flex;gap:5px;margin:2px 0 8px;">'
                     + PRESETS.map(function (p, i) {
                         return '<button data-pi="' + i + '" style="flex:1;padding:6px 2px;'
@@ -2528,7 +2804,7 @@ COMPARE_WINDOW_HTML = '''
                      onMainRefreshed: onMainRefreshed, stylePanel: stylePanel };
         })();
 
-        // ── 🧩 표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
+        // ──  표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
         var EXSEC = (function () {
             var CATS = ['응급실', '중환자실', '격리진료구역', '입원실', '기타', '의료장비',
                         '중증질환 수용가능', '예외상황'];
@@ -2598,7 +2874,7 @@ COMPARE_WINDOW_HTML = '''
                     }).join('');
                     wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:340px;'
                         + 'width:88vw;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                        + '<div style="font-weight:700;margin-bottom:6px;">🧩 표시 항목 · 순서</div>'
+                        + '<div style="font-weight:700;margin-bottom:6px;">표시 항목 · 순서</div>'
                         + '<div style="max-height:52vh;overflow:auto;">' + rows + '</div>'
                         + '<div style="display:flex;gap:8px;margin-top:10px;">'
                         + '<button id="secMin" style="flex:1;padding:8px;border:none;border-radius:10px;'
@@ -2623,7 +2899,7 @@ COMPARE_WINDOW_HTML = '''
                     var dn = t.getAttribute ? t.getAttribute('data-dn') : null;
                     if (up !== null) {
                         var i = parseInt(up);
-                        if (i > 0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
+                        if (i >0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
                         save(c); apply(); build(); return;
                     }
                     if (dn !== null) {
@@ -2666,7 +2942,7 @@ COMPARE_WINDOW_HTML = '''
             try { LIVE_MINI.onMainRefreshed(); } catch (e) {}
             try {
                 const bar = document.getElementById('reconBar');
-                if (bar) bar.textContent = '⚠️ 서버 끊김 — 직접조회 모드로 갱신 중 (Pydroid 재실행 시 자동 복귀)';
+                if (bar) bar.textContent = ' 서버 끊김 — 직접조회 모드로 갱신 중 (Pydroid 재실행 시 자동 복귀)';
             } catch (e) {}
         }
 
@@ -2733,10 +3009,10 @@ COMPARE_WINDOW_HTML = '''
                     try { await fallbackRefresh(); }
                     catch (fe) { console.error('직접조회 전환 실패:', fe); }
                 }
-                if (txt) txt.textContent = '⚠️ 갱신 실패: ' + err.message;
+                if (txt) txt.textContent = ' 갱신 실패: ' + err.message;
                 if (bar) { bar.className = 'bar bar-red'; bar.style.width = '100%'; }
                 // 오류 메시지를 3초간 표시한 후 타이머 재시작
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r =>setTimeout(r, 3000));
             } finally {
                 isRefreshing = false;
                 startAutoRefresh();
@@ -2758,7 +3034,7 @@ COMPARE_WINDOW_HTML = '''
                 _sel.appendChild(_c);
             }
             currentInterval = parseInt(_sel.value);
-            if (currentInterval > 0) {
+            if (currentInterval >0) {
                 nextRefreshTime = Date.now() + currentInterval;
                 // sessionStorage에 저장 (이슈2: 창 전환 후에도 유지)
                 try { sessionStorage.setItem('nrt', String(nextRefreshTime)); } catch(e){}
@@ -2799,9 +3075,9 @@ COMPARE_WINDOW_HTML = '''
             bar.style.width = pct + '%';
             // 남은 비율에 따라 그라데이션 색상 전환
             let grad;
-            if (pct > 60) {
+            if (pct >60) {
                 grad = 'linear-gradient(to bottom,#80B382,#507A52)';
-            } else if (pct > 30) {
+            } else if (pct >30) {
                 grad = 'linear-gradient(to bottom,#F8BB47,#E0952A)';
             } else {
                 grad = 'linear-gradient(to bottom,#E36460,#C53533)';
@@ -2820,7 +3096,7 @@ COMPARE_WINDOW_HTML = '''
                 const saved = sessionStorage.getItem('nrt');
                 if (saved) {
                     const savedTime = parseInt(saved);
-                    if (!isNaN(savedTime) && savedTime > nextRefreshTime) {
+                    if (!isNaN(savedTime) && savedTime >nextRefreshTime) {
                         nextRefreshTime = savedTime;
                     }
                 }
@@ -2872,7 +3148,7 @@ COMPARE_WINDOW_HTML = '''
                 var ivSec  = Math.round(parseInt(ivMs) / 1000);
                 var btn    = document.getElementById('pipBtn');
                 btn.disabled = true;
-                btn.textContent = '📺 PiP 전환 중...';
+                btn.textContent = ' PiP 전환 중...';
                 fetch('/api/enter_pip', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -2881,21 +3157,21 @@ COMPARE_WINDOW_HTML = '''
                 .then(function(r) { return r.json(); })
                 .then(function(d) {
                     if (d.ok) {
-                        btn.textContent = '📺 PiP 요청됨';
+                        btn.textContent = ' PiP 요청됨';
                         // Kivy가 PiP 진입하면 브라우저는 백그라운드로 전환됨
                         // 3초 후 버튼 복원 (Kivy PiP 진입 실패 시 대비)
                         setTimeout(function() {
-                            btn.textContent = '📺 백그라운드';
+                            btn.textContent = ' 백그라운드';
                             btn.disabled = false;
                         }, 3000);
                     } else {
-                        btn.textContent = '📺 백그라운드';
+                        btn.textContent = ' 백그라운드';
                         btn.disabled = false;
                     }
                 })
                 .catch(function(e) {
                     console.error('[PiP] 요청 실패:', e);
-                    btn.textContent = '📺 백그라운드';
+                    btn.textContent = ' 백그라운드';
                     btn.disabled = false;
                 });
             });
@@ -2931,7 +3207,7 @@ COMPARE_WINDOW_HTML = '''
                 const textW = span.getBoundingClientRect().width;
                 document.body.removeChild(span);
 
-                if (textW > containerW - 2) {
+                if (textW >containerW - 2) {
                     const ratio = (containerW - 2) / textW;
                     const newSz = Math.max(curFontSize * ratio * 0.97, 5);
                     overlay.style.fontSize = newSz + 'px';
@@ -2943,14 +3219,14 @@ COMPARE_WINDOW_HTML = '''
             if (numCols >= 2) {
                 const tableW = document.querySelector('.comparison-table')?.clientWidth || 0;
                 const firstColW = document.querySelector('.comparison-table thead th')?.clientWidth || 0;
-                const cellW = tableW > 0 ? (tableW - firstColW) / numCols : 0;
-                if (cellW > 0) {
+                const cellW = tableW >0 ? (tableW - firstColW) / numCols : 0;
+                if (cellW >0) {
                     document.querySelectorAll('.comparison-table td:not(.item-label):not(.category-header)').forEach(td => {
                         const inner = td.querySelector('.bed-numbers, .equipment-cell, .bed-cell');
                         const el = inner || td;
                         el.style.fontSize = '';
                         const curSz = parseFloat(window.getComputedStyle(el).fontSize);
-                        if (el.scrollWidth > cellW + 4) {
+                        if (el.scrollWidth >cellW + 4) {
                             const ratio = cellW / el.scrollWidth;
                             el.style.fontSize = Math.max(curSz * ratio * 0.95, 6) + 'px';
                         }
@@ -2966,7 +3242,7 @@ COMPARE_WINDOW_HTML = '''
                 if (saved) {
                     const savedTime = parseInt(saved);
                     const now = Date.now();
-                    if (!isNaN(savedTime) && savedTime > now) {
+                    if (!isNaN(savedTime) && savedTime >now) {
                         // 저장된 시간으로 타이머 복원
                         currentInterval = parseInt(document.getElementById('refreshInterval').value);
                         nextRefreshTime = savedTime;
@@ -2993,7 +3269,7 @@ COMPARE_WINDOW_HTML = '''
             .then(function(d){
                 if (d.ts && d.ts > _syncLastTs + 1) {
                     _syncLastTs = d.ts;
-                    if (!isRefreshing && currentInterval > 0) {
+                    if (!isRefreshing && currentInterval >0) {
                         // PiP 쪽에서 갱신됨 → 상황판도 갱신
                         refreshPage();
                     }
@@ -3034,14 +3310,14 @@ _REGION_LOCK  = _threading.Lock()
 #   봉투 명시적 검출 을 적용한다.
 # ══════════════════════════════════════════════════════════════════
 _SIDO_ALIAS = {
-    '서울특별시': ['서울'],           '부산광역시': ['부산'],
-    '대구광역시': ['대구'],           '인천광역시': ['인천'],
-    '광주광역시': ['광주'],           '대전광역시': ['대전'],
-    '울산광역시': ['울산'],           '세종특별자치시': ['세종', '세종시'],
-    '경기도': ['경기'],               '강원특별자치도': ['강원', '강원도'],
-    '충청북도': ['충북'],             '충청남도': ['충남'],
+    '서울특별시': ['서울'], '부산광역시': ['부산'],
+    '대구광역시': ['대구'], '인천광역시': ['인천'],
+    '광주광역시': ['광주'], '대전광역시': ['대전'],
+    '울산광역시': ['울산'], '세종특별자치시': ['세종', '세종시'],
+    '경기도': ['경기'], '강원특별자치도': ['강원', '강원도'],
+    '충청북도': ['충북'], '충청남도': ['충남'],
     '전북특별자치도': ['전북', '전라북도'], '전라남도': ['전남'],
-    '경상북도': ['경북'],             '경상남도': ['경남'],
+    '경상북도': ['경북'], '경상남도': ['경남'],
     '제주특별자치도': ['제주', '제주도'],
 }
 
@@ -3080,12 +3356,12 @@ def _api_root(resp, ctx=''):
 
 
 def _api_items(resp, ctx=''):
-    """[메모리 상한] 응답을 iterparse 로 흘려보내며 <item> 단위로만 넘긴다.
+    """[메모리 상한] 응답을 iterparse 로 흘려보내며 <item>단위로만 넘긴다.
 
     기존 ET.fromstring 은 응답 전체(항목 400개 x 태그 60개 ≈ 24,000 Element)를
     메모리에 상주시켰고, 이것이 동시 조회 시 Android 프로세스 강제종료
     (ERR_CONNECTION_REFUSED)의 직접 원인이었다. 스트리밍으로 바꾸면
-    상주량이 <item> 1개 수준으로 고정된다.
+    상주량이 <item>1개 수준으로 고정된다.
 
     yield: (item_element, totalCount_or_-1)
     소비자는 item 을 즉시 사용해야 하며(다음 반복에서 해제됨) 보관하면 안 된다.
@@ -3211,7 +3487,7 @@ def _fetch_sido_list(sido):
             page += 1
         if rows:
             if q != sido:
-                _ns_dbg('  %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(rows)))
+                _ns_dbg(' %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(rows)))
             return rows
     return []
 
@@ -3249,10 +3525,10 @@ def _all_hospitals(force=False):
         try:
             got = f.result()
             rows.extend(got)
-            _ns_dbg('  %s: %d' % (s, len(got)))
+            _ns_dbg(' %s: %d' % (s, len(got)))
         except Exception as e:
             fails.append('%s: %s' % (s, e))
-            _ns_dbg('  %s: FAIL %s' % (s, e))
+            _ns_dbg(' %s: FAIL %s' % (s, e))
 
     if not rows:
         _ns_dbg('roster FAILED %s' % fails[:3])
@@ -3360,7 +3636,7 @@ def _sum_beds(item, tags):
 
 def _bed_obj(pair):
     a, t = pair
-    return {'a': a, 't': t, 'r': (round(max(0.0, (t - a) / float(t)), 4) if t > 0 else None)}
+    return {'a': a, 't': t, 'r': (round(max(0.0, (t - a) / float(t)), 4) if t >0 else None)}
 
 
 def _fetch_sido_beds(sido):
@@ -3372,16 +3648,23 @@ def _fetch_sido_beds(sido):
             hpid = (it.findtext('hpid') or '').strip()
             if not hpid:
                 continue
+            def _yn(tag):
+                return (it.findtext(tag) or 'N').strip().upper().startswith('Y')
+
             out[hpid] = {
                 'er':   _bed_obj(_sum_beds(it, _ER_TAGS)),
                 'ward': _bed_obj(_sum_beds(it, _WARD_TAGS)),
                 'icu':  _bed_obj(_sum_beds(it, _ICU_TAGS)),
+                # 자원검색용 장비 보유 플래그
+                #   TTM = 중심체온조절유도기(hvhypoayn), HBO = 고압산소치료기(hvoxyayn)
+                'eq': {'crrt': _yn('hvcrrtayn'), 'ecmo': _yn('hvecmoayn'),
+                       'ttm': _yn('hvhypoayn'), 'hbo': _yn('hvoxyayn')},
                 'tel3': (it.findtext('dutyTel3') or '').strip(),
-                'upd':  (it.findtext('hvidate') or '').strip(),
+                'upd': (it.findtext('hvidate') or '').strip(),
             }
         if out:
             if q != sido:
-                _ns_dbg('  bed %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(out)))
+                _ns_dbg(' bed %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(out)))
             return out
     return {}
 
@@ -3525,10 +3808,10 @@ def api_bed_saturation():
             try:
                 got, was_cached = f.result()
                 beds.update(got)
-                _ns_dbg('  sat %s: %d%s' % (sd, len(got), ' (cache)' if was_cached else ''))
+                _ns_dbg(' sat %s: %d%s' % (sd, len(got), ' (cache)' if was_cached else ''))
             except Exception as e:
                 fails.append('%s: %s' % (sd, e))
-                _ns_dbg('  sat %s: FAIL %s' % (sd, e))
+                _ns_dbg(' sat %s: FAIL %s' % (sd, e))
         futs.clear()
 
     if not beds:
@@ -3646,14 +3929,14 @@ def _get_hospital_level(emcls, name=''):
 #  메시지 API에서 symTypCodMag가 비어있고 symTypCod가 D코드일 때 사용
 # ══════════════════════════════════════════════════════════════════
 D_CODE_MAP = {
-    'D001': '내과',          'D002': '소아청소년과',   'D003': '신경과',
-    'D004': '정신건강의학과', 'D005': '피부과',         'D006': '외과',
-    'D007': '흉부외과',      'D008': '정형외과',       'D009': '신경외과',
-    'D010': '성형외과',      'D011': '산부인과',       'D012': '안과',
-    'D013': '이비인후과',    'D014': '비뇨기과',       'D016': '재활의학과',
-    'D017': '마취통증의학과','D018': '영상의학과',     'D019': '치료방사선과',
-    'D020': '임상병리과',    'D021': '해부병리과',     'D022': '가정의학과',
-    'D023': '핵의학과',      'D024': '응급의학과',     'D026': '치과',
+    'D001': '내과', 'D002': '소아청소년과', 'D003': '신경과',
+    'D004': '정신건강의학과', 'D005': '피부과', 'D006': '외과',
+    'D007': '흉부외과', 'D008': '정형외과', 'D009': '신경외과',
+    'D010': '성형외과', 'D011': '산부인과', 'D012': '안과',
+    'D013': '이비인후과', 'D014': '비뇨기과', 'D016': '재활의학과',
+    'D017': '마취통증의학과','D018': '영상의학과', 'D019': '치료방사선과',
+    'D020': '임상병리과', 'D021': '해부병리과', 'D022': '가정의학과',
+    'D023': '핵의학과', 'D024': '응급의학과', 'D026': '치과',
     'D034': '구강악안면외과',
 }
 
@@ -3663,15 +3946,15 @@ D_CODE_MAP = {
 # ══════════════════════════════════════════════════════════════════
 MKIOSK_MAP = {
     # 공식 매핑: Ty1=응급실, Ty2~Ty28 = 중증응급질환 27종 (메시지 API Y코드와 동일 순서)
-    'MKioskTy1':  '응급실 수용',
-    'MKioskTy2':  '[재관류중재술] 심근경색',
-    'MKioskTy3':  '[재관류중재술] 뇌경색',
-    'MKioskTy4':  '[뇌출혈수술] 거미막하출혈',
-    'MKioskTy5':  '[뇌출혈수술] 거미막하출혈 외',
-    'MKioskTy6':  '[대동맥응급] 흉부',
-    'MKioskTy7':  '[대동맥응급] 복부',
-    'MKioskTy8':  '[담낭담관질환] 담낭질환',
-    'MKioskTy9':  '[담낭담관질환] 담도포함질환',
+    'MKioskTy1': '응급실 수용',
+    'MKioskTy2': '[재관류중재술] 심근경색',
+    'MKioskTy3': '[재관류중재술] 뇌경색',
+    'MKioskTy4': '[뇌출혈수술] 거미막하출혈',
+    'MKioskTy5': '[뇌출혈수술] 거미막하출혈 외',
+    'MKioskTy6': '[대동맥응급] 흉부',
+    'MKioskTy7': '[대동맥응급] 복부',
+    'MKioskTy8': '[담낭담관질환] 담낭질환',
+    'MKioskTy9': '[담낭담관질환] 담도포함질환',
     'MKioskTy10': '[복부응급수술] 비외상',
     'MKioskTy11': '[장중첩/폐색] 영유아',
     'MKioskTy12': '[응급내시경] 성인 위장관',
@@ -3697,7 +3980,7 @@ MKIOSK_MAP = {
 #  Y코드 → 한국어명 매핑 (API가 Y코드를 반환하는 경우 대비)
 # ══════════════════════════════════════════════════════════════════
 Y_CODE_MAP = {
-    'Y000':  '응급실',
+    'Y000': '응급실',
     'Y0010': '[재관류중재술] 심근경색',
     'Y0020': '[재관류중재술] 뇌경색',
     'Y0031': '[뇌출혈수술] 거미막하출혈',
@@ -3805,11 +4088,11 @@ def _fetch_one_hospital_msgs(hpid):
                 total_count = 0
 
             for item in items:
-                sym_blk_msg     = (item.findtext('symBlkMsg')     or '').strip()
-                sym_typ_cod_mag = (item.findtext('symTypCodMag')  or '').strip()
-                sym_typ_cod     = (item.findtext('symTypCod')     or '').strip()
-                sym_blk_msg_typ = (item.findtext('symBlkMsgTyp')  or '').strip()
-                sym_out_dsp_yon = (item.findtext('symOutDspYon')  or '').strip()
+                sym_blk_msg     = (item.findtext('symBlkMsg') or '').strip()
+                sym_typ_cod_mag = (item.findtext('symTypCodMag') or '').strip()
+                sym_typ_cod     = (item.findtext('symTypCod') or '').strip()
+                sym_blk_msg_typ = (item.findtext('symBlkMsgTyp') or '').strip()
+                sym_out_dsp_yon = (item.findtext('symOutDspYon') or '').strip()
 
                 # 모든 태그 덤프 (디버그)
                 all_tags = {child.tag: (child.text or '') for child in item}
@@ -3830,7 +4113,7 @@ def _fetch_one_hospital_msgs(hpid):
                     label = ''
 
                 if not clean_msg and not label:
-                    print(f"[MSG_PROC] -> SKIPPED (both empty)")
+                    print(f"[MSG_PROC] ->SKIPPED (both empty)")
                     continue
 
                 # 최종 content 구성
@@ -3853,16 +4136,16 @@ def _fetch_one_hospital_msgs(hpid):
         if exception_msgs:
             return hpid, '\n'.join(list(dict.fromkeys(exception_msgs)))
         else:
-            return hpid, '✅ 정상'
+            return hpid, ' 정상'
     except Exception as e:
         print(f"예외상황 조회 오류 (hpid={hpid}): {e}")
-        return hpid, '✅ 정상'
+        return hpid, ' 정상'
 
 
 def _fetch_messages_direct(hpids):
     """
     병렬로 예외상황 메시지 조회 (HTTP 자기호출 없이 직접).
-    반환값: {hpid: '✅ 정상' | '[수용불가] ...\n[문의필요] ...' }
+    반환값: {hpid: ' 정상' | '[수용불가] ...\n[문의필요] ...' }
     """
     messages = {}
     with ThreadPoolExecutor(max_workers=min(5, len(hpids))) as ex:
@@ -3874,7 +4157,7 @@ def _fetch_messages_direct(hpids):
             except Exception as e:
                 hpid = futures[future]
                 print(f"병렬 메시지 조회 실패 ({hpid}): {e}")
-                messages[hpid] = '✅ 정상'
+                messages[hpid] = ' 정상'
     return messages
 
 
@@ -3940,7 +4223,7 @@ def _fetch_kiosk_info(sido, gugun):
 
 # ══════════════════════════════════════════════════════════════════
 #  응급실 병상 상시 알림 모니터 (Pydroid 3 / Kivy APK 겸용)
-#  - 비교화면에서 병원 1곳 선택(🔔) → Flask 백그라운드 스레드가
+#  - 비교화면에서 병원 1곳 선택() → Flask 백그라운드 스레드가
 #    선택한 주기마다 응급실 일반(hvec) 병상을 조회해
 #    안드로이드 상단 알림을 "병원명 x/y(z%)" 형식으로 무음 갱신한다.
 #  - jnius로 NotificationManager를 직접 호출 → APK 빌드 불필요.
@@ -3951,12 +4234,12 @@ _BED_NOTIFY_CHANNEL = 'bed_monitor'
 _bed_notify_lock  = threading.Lock()
 _bed_notify_state = {
     'running': False,
-    'hospitals': [],          # [{'hpid','name','sido','gugun'}, ...] (복수 선택)
+    'hospitals': [], # [{'hpid','name','sido','gugun'}, ...] (복수 선택)
     'iv_sec': 180, 'h_param': '', 'thread': None,
-    'stop_event': None, 'kick_event': None,   # kick: '지금 갱신' 버튼용
+    'stop_event': None, 'kick_event': None, # kick: '지금 갱신' 버튼용
     'line_map': {},           # hpid → 마지막 표시줄
     'last_line': '', 'last_ts': '', 'next_epoch': 0.0,
-    'mode': 'notify',         # 'notify'(알림) | 'overlay'(상단 오버레이)
+    'mode': 'notify', # 'notify'(알림) | 'overlay'(상단 오버레이)
 }
 # 상단 반투명 오버레이 뷰 참조 (UI 스레드에서만 조작)
 _overlay_refs = {'view': None, 'wm': None, 'params': None}
@@ -3999,7 +4282,7 @@ def _bed_notifications_status():
         try:
             if not nm.areNotificationsEnabled():
                 return False, ('알림이 꺼져 있습니다. 휴대폰 설정 → 앱 → Pydroid 3 → '
-                               '알림 허용 후 🔔을 다시 눌러주세요.')
+                               '알림 허용 후 을 다시 눌러주세요.')
         except Exception:
             pass  # API < 24
         return True, ''
@@ -4064,7 +4347,7 @@ def _post_bed_notification(title, text, big_text=None, sub_text=None,
             except Exception as _cd:
                 _dlog(f'[알림] 카운트다운 실패(무시): {_cd}')
         if timeout_ms:
-            try:   # ★ 프로세스가 강제종료돼도 OS가 만료 시 알림을 자동 제거 (API 26+)
+            try:   #  프로세스가 강제종료돼도 OS가 만료 시 알림을 자동 제거 (API 26+)
                 if VERSION.SDK_INT >= 26:
                     b.setTimeoutAfter(int(timeout_ms))
             except Exception as _to:
@@ -4093,8 +4376,8 @@ def _post_bed_notification(title, text, big_text=None, sub_text=None,
                                 Uri.parse('http://127.0.0.1:5000/api/bed_notify_close'))
                     ci.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     cpi = PendingIntent.getActivity(ctx, 2, ci, flags)
-                    b.addAction(ctx.getApplicationInfo().icon, '✕ 닫기', cpi)
-                    _dlog('[알림] 액션 부착: ⟳ 지금갱신 / ✕ 닫기')
+                    b.addAction(ctx.getApplicationInfo().icon, ' 닫기', cpi)
+                    _dlog('[알림] 액션 부착: ⟳ 지금갱신 / 닫기')
                 except Exception as _ka:
                     _dlog(f'[알림] 갱신 버튼 실패(무시): {_ka}')
         except Exception as _pe:
@@ -4202,10 +4485,10 @@ def _overlay_permission_state():
             declared = True   # 판정 실패 시 설정 안내 쪽으로 진행
         if declared:
             return 'not_granted', ("'다른 앱 위에 표시' 권한이 필요합니다. "
-                                   '방금 열린 설정에서 허용한 뒤 📌을 다시 눌러주세요.')
+                                   '방금 열린 설정에서 허용한 뒤 을 다시 눌러주세요.')
         return 'not_declared', (f'{pkg} 앱이 오버레이 권한(SYSTEM_ALERT_WINDOW)을 '
                                 '선언하지 않아 일반 설정으로는 허용할 수 없습니다. '
-                                '알림(🔔) 방식을 사용하거나 ADB로 권한을 부여해야 합니다. '
+                                '알림() 방식을 사용하거나 ADB로 권한을 부여해야 합니다. '
                                 f'(PC: adb shell appops set {pkg} '
                                 'SYSTEM_ALERT_WINDOW allow)')
     except Exception as e:
@@ -4329,7 +4612,7 @@ def _fetch_bed_line(hpid, sido, gugun, name_hint=''):
             avail = safe_int(item.findtext('hvec'))
             t_raw = get_hvs(item, 'HVS01')
             prev  = _pip_bed_total_cache.get(hpid, {})
-            if t_raw > 0:
+            if t_raw >0:
                 prev['hvec_t'] = t_raw
                 total = t_raw
             else:
@@ -4337,7 +4620,7 @@ def _fetch_bed_line(hpid, sido, gugun, name_hint=''):
             _pip_bed_total_cache[hpid] = prev
             if avail < 0:
                 return f'{name} 정보없음'
-            if total > 0:
+            if total >0:
                 pct = round(avail / total * 100)
                 return f'{name} {avail}/{total}({pct}%)'
             return f'{name} {avail}/-'
@@ -4384,7 +4667,7 @@ def _resume_monitor_if_saved():
             _dlog('[알림] 오버레이/비복원 설정 — 자동 복원 생략')
             _clear_monitor_cfg()
             return
-        if time.time() - float(cfg.get('ts', 0)) > 21600:
+        if time.time() - float(cfg.get('ts', 0)) >21600:
             return
         hosp = cfg.get('hospitals') or []
         if not hosp:
@@ -4477,7 +4760,7 @@ def _post_error_and_close(reason):
                 Builder = autoclass('android.app.Notification$Builder')
                 b = Builder(ctx)
             b.setSmallIcon(ctx.getApplicationInfo().icon)
-            b.setContentTitle('⚠️ 병상 모니터 중단')
+            b.setContentTitle(' 병상 모니터 중단')
             b.setContentText(reason)
             b.setAutoCancel(True)
             nm.notify(_BED_NOTIFY_ID + 1, b.build())
@@ -4509,7 +4792,7 @@ def _lines_from_compare_cache(hospitals, max_age):
                         age += 86400   # 자정 경계
                 except Exception:
                     age = 99999.0
-            if not ce or age > max_age:
+            if not ce or age >max_age:
                 all_ok = False
                 continue
             name = ce.get('name') or h.get('name') or h['hpid']
@@ -4518,7 +4801,7 @@ def _lines_from_compare_cache(hospitals, max_age):
             total = ce.get('hvec_t', 0) or 0
             if avail < 0:
                 out[h['hpid']] = f'{name} 정보없음'
-            elif total > 0:
+            elif total >0:
                 pct = round(avail / total * 100)
                 out[h['hpid']] = f'{name} {avail}/{total}({pct}%)'
             else:
@@ -4604,7 +4887,7 @@ def _overlay_adjust(action, value=0):
     cur_h  = _overlay_refs.get('h') or p.height
 
     if action == 'scale':
-        f = 1.18 if value > 0 else (1 / 1.18)
+        f = 1.18 if value >0 else (1 / 1.18)
         new_w = int(max(dens * 180, min(scr_w - dens * 8, cur_w * f)))
         new_h = int(max(dens * 110, min(scr_h * 0.92, cur_h * f)))
     else:
@@ -4659,7 +4942,7 @@ def _fetch_bed_lines(hospitals):
             avail = safe_int(item.findtext('hvec'))
             t_raw = get_hvs(item, 'HVS01')
             prev  = _pip_bed_total_cache.get(h['hpid'], {})
-            if t_raw > 0:
+            if t_raw >0:
                 prev['hvec_t'] = t_raw
                 total = t_raw
             else:
@@ -4667,7 +4950,7 @@ def _fetch_bed_lines(hospitals):
             _pip_bed_total_cache[h['hpid']] = prev
             if avail < 0:
                 out[h['hpid']] = f'{name} 정보없음'
-            elif total > 0:
+            elif total >0:
                 pct = round(avail / total * 100)
                 out[h['hpid']] = f'{name} {avail}/{total}({pct}%)'
             else:
@@ -4735,7 +5018,7 @@ def _bed_notify_worker(stop_event):
                 _post_bed_notification(
                     lines[0] if n == 1 else f'응급실 병상 {n}곳 모니터',
                     (f'{ts} 갱신' if n == 1 else lines[0] + f' · {ts} 갱신'),
-                    big_text=('\n'.join(lines) + f'\n⏱ {ts} 갱신') if n > 1 else None,
+                    big_text=('\n'.join(lines) + f'\n {ts} 갱신') if n >1 else None,
                     sub_text=_sub,
                     when_ms=_when, count_down=_cd,
                     kick_action=True, timeout_ms=(wait + 90) * 1000)
@@ -4746,7 +5029,7 @@ def _bed_notify_worker(stop_event):
             if stop_event.is_set():
                 break
             # [중단 감지] 카운트다운 0 이후에도 깨어나지 못했던 경우
-            if (not kick.is_set()) and (time.time() - _t0) > wait + 90:
+            if (not kick.is_set()) and (time.time() - _t0) >wait + 90:
                 _post_error_and_close(
                     '백그라운드에서 갱신이 중단되었습니다. '
                     'Pydroid 3 배터리 최적화 해제 여부를 확인하세요.')
@@ -4809,8 +5092,8 @@ def api_bed_notify():
                   'sido': data.get('sido'), 'gugun': data.get('gugun')}]
     clean = []
     for h in (hosps or []):
-        hpid  = (h.get('hpid')  or '').strip()
-        sido  = (h.get('sido')  or '').strip()
+        hpid  = (h.get('hpid') or '').strip()
+        sido  = (h.get('sido') or '').strip()
         gugun = (h.get('gugun') or '').strip()
         if hpid and sido and gugun:
             clean.append({'hpid': hpid, 'name': (h.get('name') or hpid).strip(),
@@ -4871,7 +5154,7 @@ def api_bed_notify():
         _save_monitor_cfg()    # 강제종료 후 자동 복원용
     if mode == 'notify' and not warn:
         _usable, warn = _bed_notifications_status()
-    nm = ', '.join(h['name'] for h in clean[:2]) + (' 외' if len(clean) > 2 else '')
+    nm = ', '.join(h['name'] for h in clean[:2]) + (' 외' if len(clean) >2 else '')
     return jsonify({'ok': True, 'running': True,
                     'msg': f'{nm} {label} 시작 ({iv}초 주기)',
                     'warn': warn})
@@ -4879,12 +5162,12 @@ def api_bed_notify():
 
 @flask_app.route('/api/bed_notify_close')
 def api_bed_notify_close():
-    """알림의 '✕ 닫기' 버튼 → 모니터 종료 + 알림 제거"""
+    """알림의 ' 닫기' 버튼 → 모니터 종료 + 알림 제거"""
     with _bed_notify_lock:
         was = _bed_notify_state['running']
         _stop_bed_notify()
         _clear_monitor_cfg()
-    body = '✅ 병상 모니터를 종료했습니다.' if was else '실행 중인 병상 모니터가 없습니다.'
+    body = ' 병상 모니터를 종료했습니다.' if was else '실행 중인 병상 모니터가 없습니다.'
     return (f'<html><head><meta charset="utf-8"><meta name="viewport" '
             f'content="width=device-width, initial-scale=1"></head>'
             f'<body style="font-family:sans-serif;padding:40px 16px;'
@@ -4897,7 +5180,7 @@ def api_bed_notify_kick():
     st = _bed_notify_state
     if st['running'] and st.get('kick_event'):
         st['kick_event'].set()
-        body = '✅ 지금 갱신합니다. 이 창은 닫으셔도 됩니다.'
+        body = ' 지금 갱신합니다. 이 창은 닫으셔도 됩니다.'
     else:
         body = '실행 중인 병상 모니터가 없습니다.'
     return (f'<html><head><meta charset="utf-8"><meta name="viewport" '
@@ -4920,8 +5203,8 @@ def api_bed_line():
         line = st.get('last_line') or '조회 중...'
         ts = st.get('last_ts', '')
         return (f'{line} · {ts}' if ts else line), 200, _hdr
-    hpid  = (request.args.get('hpid')  or '').strip()
-    sido  = (request.args.get('sido')  or '').strip()
+    hpid  = (request.args.get('hpid') or '').strip()
+    sido  = (request.args.get('sido') or '').strip()
     gugun = (request.args.get('gugun') or '').strip()
     if hpid and sido and gugun:
         key = f'{hpid}|{sido}|{gugun}'
@@ -4983,7 +5266,7 @@ def compare():
 
         if not h_param:
             old_hpids = request.args.get('hpids', '').strip()
-            old_sido  = request.args.get('sido',  '').strip()
+            old_sido  = request.args.get('sido', '').strip()
             old_gugun = request.args.get('gugun', '').strip()
             if old_hpids and old_sido and old_gugun:
                 h_param = ','.join(
@@ -4992,7 +5275,7 @@ def compare():
                 )
                 _log(f'[compare] 구버전 URL 변환: {h_param[:80]}')
             else:
-                return ('<div style="padding:20px;color:#d32f2f;">❌ 오류: 병원 정보가 없습니다.'
+                return ('<div style="padding:20px;color:#d32f2f;">오류: 병원 정보가 없습니다.'
                         ' 메인 페이지에서 병원을 선택해주세요.</div>'), 400
 
         _log(f'[compare] GET 요청: h={h_param[:120]}')
@@ -5013,9 +5296,9 @@ def compare():
         if parse_errors:
             _log(f'[compare] 파싱 실패 항목: {parse_errors}', 'ERROR')
         if not entries:
-            return ('<div style="padding:20px;color:#d32f2f;">❌ 오류: 파싱 가능한 병원 정보가 없습니다.'
+            return ('<div style="padding:20px;color:#d32f2f;">오류: 파싱 가능한 병원 정보가 없습니다.'
                     ' 메인 페이지에서 다시 선택해주세요.</div>'), 400
-        if len(entries) > 5:
+        if len(entries) >5:
             entries = entries[:5]
 
         _log(f'[compare] 파싱 완료: {len(entries)}개 병원')
@@ -5086,24 +5369,24 @@ def compare():
                         _ca = sum(h['icu'][k]['avail'] for k in _icu_ks
                                   if h['icu'][k]['avail'] >= 0)
                         _ct = sum(h['icu'][k]['total'] for k in _icu_ks
-                                  if h['icu'][k]['total'] > 0)
+                                  if h['icu'][k]['total'] >0)
                         _ce = any(h['icu'][k]['avail'] >= 0 for k in _icu_ks)
                         _now_str = datetime.now().strftime('%H:%M:%S')
                         with _compare_bed_cache_lock:
                             _compare_bed_cache[hpid] = {
-                                # ★ FIX(2025-B1): name 추가 → pip_data 캐시 히트 시
+                                #  FIX(2025-B1): name 추가 → pip_data 캐시 히트 시
                                 #   HPID 코드 대신 한글 병원명 표시
-                                'name':   h['name'],
-                                'hvec':   h['emergency']['hvec']['avail'],
-                                # ★ FIX(2025-B2): get_hvs가 태그 부재 시 -1 반환.
+                                'name': h['name'],
+                                'hvec': h['emergency']['hvec']['avail'],
+                                #  FIX(2025-B2): get_hvs가 태그 부재 시 -1 반환.
                                 #   total 필드에 -1이 저장되면 pip_data의
                                 #   양쪽합산 분기에서 hv36_t=-1이 0으로 취급되어
                                 #   합계 총량이 실제보다 낮게(hvgc_t만) 표시됨.
                                 #   max(0, v)로 "데이터 없음"을 0으로 정규화.
                                 'hvec_t': max(0, h['emergency']['hvec']['total']),
-                                'hvgc':   h['general']['hvgc']['avail'],
+                                'hvgc': h['general']['hvgc']['avail'],
                                 'hvgc_t': max(0, h['general']['hvgc']['total']),
-                                'hv36':   h['general']['hv36']['avail'],
+                                'hv36': h['general']['hv36']['avail'],
                                 'hv36_t': max(0, h['general']['hv36']['total']),
                                 'hicu':   _ca if _ce else -1,
                                 'hicu_t': _ct,
@@ -5152,11 +5435,10 @@ def compare():
         if not hospitals_data:
             err_detail = '<br>'.join(fetch_errors) if fetch_errors else '해당 지역에 병원을 찾을 수 없습니다.'
             return (f'''<html><body style="font-family:sans-serif;padding:20px;">
-                <div style="color:#d32f2f;background:#ffe0e0;padding:15px;border-radius:8px;margin-bottom:15px;">
-                ❌ 데이터 로드 실패:<br>{err_detail}</div>
+                <div style="color:#d32f2f;background:#ffe0e0;padding:15px;border-radius:8px;margin-bottom:15px;">데이터 로드 실패:<br>{err_detail}</div>
                 <button onclick="location.reload()"
                   style="padding:10px 20px;background:#667eea;color:white;border:none;
-                         border-radius:6px;cursor:pointer;font-size:1rem;">🔄 다시 시도</button>
+                         border-radius:6px;cursor:pointer;font-size:1rem;">다시 시도</button>
                 <button onclick="history.back()"
                   style="padding:10px 20px;background:#888;color:white;border:none;
                          border-radius:6px;cursor:pointer;font-size:1rem;margin-left:10px;">◀ 뒤로</button>
@@ -5164,7 +5446,7 @@ def compare():
 
         # ── 예외상황 메시지 직접 조회 (수정1: HTTP 자기호출 제거) ──
         # [최적화] 지역 조회와 동시에 시작해 둔 future 결과를 수집한다.
-        # 개별 실패 → '✅ 정상' 폴백은 기존 _fetch_messages_direct와 동일.
+        # 개별 실패 → ' 정상' 폴백은 기존 _fetch_messages_direct와 동일.
         try:
             msgs = {}
             for _hp, _fu in _msg_futures.items():
@@ -5173,14 +5455,14 @@ def compare():
                     msgs[_hpid_res] = _msg_res
                 except Exception as _fe:
                     print(f"병렬 메시지 조회 실패 ({_hp}): {_fe}")
-                    msgs[_hp] = '✅ 정상'
+                    msgs[_hp] = ' 정상'
             for h in hospitals_data:
-                h['exception'] = msgs.get(h.get('hpid'), '✅ 정상')
+                h['exception'] = msgs.get(h.get('hpid'), ' 정상')
             _log(f'[compare] 예외상황 메시지 수신 완료')
         except Exception as msg_err:
             _log(f'[compare] 예외상황 조회 실패 (무시): {msg_err}', 'ERROR')
             for h in hospitals_data:
-                h.setdefault('exception', '✅ 정상')
+                h.setdefault('exception', ' 정상')
 
         # ── 기본정보(dutyInf) 병렬 조회 ──────────────────────────────
         # [최적화] 지역 조회와 동시에 시작해 둔 future 결과를 수집한다.
@@ -5220,17 +5502,18 @@ def compare():
 
         n = len(hospitals_data)
         sizes = {
-            'title_font_size':      f'{lerp(1.95, 1.105, n):.2f}rem',  # +30% from original lerp(1.50, 0.85)
-            'base_font_size':       f'{lerp(0.90, 0.58, n):.2f}rem',
-            'table_font_size':      f'{lerp(0.92, 0.52, n):.2f}rem',
-            'category_font_size':   f'{lerp(0.88, 0.52, n):.2f}rem',
-            'label_font_size':      f'{lerp(0.88, 0.52, n):.2f}rem',
+            # 표 위 영역(제목·툴바)은 병원 수와 무관하게 5개 기준값으로 고정
+            'title_font_size': '1.11rem',
+            'base_font_size': '0.58rem',
+            'table_font_size': f'{lerp(0.92, 0.52, n):.2f}rem',
+            'category_font_size': f'{lerp(0.88, 0.52, n):.2f}rem',
+            'label_font_size': f'{lerp(0.88, 0.52, n):.2f}rem',
             'bed_number_font_size': f'{lerp(0.92, 0.56, n):.2f}em',
-            'pct_font_size_large':  f'{lerp(0.88, 0.58, n):.2f}em',
-            'exception_font_size':  f'{lerp(0.78, 0.48, n):.2f}em',
-            'cell_padding':         '4px 2px',
-            'bed_cell_padding':     '3px 2px',
-            'bar_height':           '5px',
+            'pct_font_size_large': f'{lerp(0.88, 0.58, n):.2f}em',
+            'exception_font_size': f'{lerp(0.78, 0.48, n):.2f}em',
+            'cell_padding': '4px 2px',
+            'bed_cell_padding': '3px 2px',
+            'bar_height': '5px',
         }
 
         content = generate_comparison_html(hospitals_data)
@@ -5242,7 +5525,7 @@ def compare():
             content=content,
             **sizes
         )
-        # ★ 서버 사망 대비: 직접조회 폴백 엔진을 페이지에 내장
+        #  서버 사망 대비: 직접조회 폴백 엔진을 페이지에 내장
         return _page.replace('</body>', _live_engine_script(entries) + '</body>', 1)
     except Exception as e:
         _log(f'[compare] 처리 오류: {e}\n{traceback.format_exc()}', 'ERROR')
@@ -5265,29 +5548,29 @@ def parse_hospital_data(item):
         return {'available': avail, 'count': safe_int(item.findtext(cnt)) if avail else 0}
 
     equipment = {
-        'ct':                eq('hvctayn',     'hvs27'),
-        'mri':               eq('hvmriayn',    'hvs28'),
-        'angio':             eq('hvangioayn',  'hvs29'),
-        'ventilator':        eq('hvventiayn',  'hvs30'),
+        'ct': eq('hvctayn', 'hvs27'),
+        'mri': eq('hvmriayn', 'hvs28'),
+        'angio': eq('hvangioayn', 'hvs29'),
+        'ventilator': eq('hvventiayn', 'hvs30'),
         'ventilator_preemie':eq('hvventisoayn','hvs31'),
-        'incubator':         eq('hvincuayn',   'hvs32'),
-        'crrt':              eq('hvcrrtayn',   'hvs33'),
-        'ecmo':              eq('hvecmoayn',   'hvs34'),
-        'hypothermia':       eq('hvhypoayn',   'hvs35'),
-        'hyperbaric':        eq('hvoxyayn',    'hvs37'),
+        'incubator': eq('hvincuayn', 'hvs32'),
+        'crrt': eq('hvcrrtayn', 'hvs33'),
+        'ecmo': eq('hvecmoayn', 'hvs34'),
+        'hypothermia': eq('hvhypoayn', 'hvs35'),
+        'hyperbaric': eq('hvoxyayn', 'hvs37'),
     }
     # hv42(분만실)은 Y/N 또는 숫자/분수 형태 → raw 저장 (이슈4)
     hv42_raw = (item.findtext('hv42') or '').strip()
     return {
-        'hpid':       item.findtext('hpid') or '',
-        'name':       item.findtext('dutyName') or '알 수 없음',
-        'dutyAddr':   item.findtext('dutyAddr') or '',
-        'dutyTel1':   item.findtext('dutyTel1') or '',
-        'dutyTel3':   item.findtext('dutyTel3') or '',
+        'hpid': item.findtext('hpid') or '',
+        'name': item.findtext('dutyName') or '알 수 없음',
+        'dutyAddr': item.findtext('dutyAddr') or '',
+        'dutyTel1': item.findtext('dutyTel1') or '',
+        'dutyTel3': item.findtext('dutyTel3') or '',
         'update_time':item.findtext('hvidate') or '',
-        'emcls':      '',       # /api/hospitals 에서 채워짐
-        'emclsName':  '',
-        'level':      '기관',  # 기본값
+        'emcls': '',       # /api/hospitals 에서 채워짐
+        'emclsName': '',
+        'level': '기관',  # 기본값
         'emergency': {
             'hvec': {'avail': safe_int(item.findtext('hvec')), 'total': get_hvs(item, 'HVS01')},
             'hv28': {'avail': safe_int(item.findtext('hv28')), 'total': get_hvs(item, 'HVS02')},
@@ -5296,17 +5579,17 @@ def parse_hospital_data(item):
         },
         'icu': {
             'hvicc': {'avail': safe_int(item.findtext('hvicc')), 'total': get_hvs(item, 'HVS17')},
-            'hv2':   {'avail': safe_int(item.findtext('hv2')),   'total': get_hvs(item, 'HVS06')},
-            'hv3':   {'avail': safe_int(item.findtext('hv3')),   'total': get_hvs(item, 'HVS07')},
+            'hv2': {'avail': safe_int(item.findtext('hv2')), 'total': get_hvs(item, 'HVS06')},
+            'hv3': {'avail': safe_int(item.findtext('hv3')), 'total': get_hvs(item, 'HVS07')},
             'hvncc': {'avail': safe_int(item.findtext('hvncc')), 'total': get_hvs(item, 'HVS08')},
-            'hv32':  {'avail': safe_int(item.findtext('hv32')),  'total': get_hvs(item, 'HVS09')},
-            'hvcc':  {'avail': safe_int(item.findtext('hvcc')),  'total': get_hvs(item, 'HVS11')},
-            'hv6':   {'avail': safe_int(item.findtext('hv6')),   'total': get_hvs(item, 'HVS12')},
-            'hv34':  {'avail': safe_int(item.findtext('hv34')),  'total': get_hvs(item, 'HVS15')},
+            'hv32': {'avail': safe_int(item.findtext('hv32')), 'total': get_hvs(item, 'HVS09')},
+            'hvcc': {'avail': safe_int(item.findtext('hvcc')), 'total': get_hvs(item, 'HVS11')},
+            'hv6': {'avail': safe_int(item.findtext('hv6')), 'total': get_hvs(item, 'HVS12')},
+            'hv34': {'avail': safe_int(item.findtext('hv34')), 'total': get_hvs(item, 'HVS15')},
             'hvccc': {'avail': safe_int(item.findtext('hvccc')), 'total': get_hvs(item, 'HVS16')},
-            'hv35':  {'avail': safe_int(item.findtext('hv35')),  'total': get_hvs(item, 'HVS18')},
-            'hv31':  {'avail': safe_int(item.findtext('hv31')),  'total': get_hvs(item, 'HVS05')},
-            'hv33':  {'avail': safe_int(item.findtext('hv33')),  'total': get_hvs(item, 'HVS10')},
+            'hv35': {'avail': safe_int(item.findtext('hv35')), 'total': get_hvs(item, 'HVS18')},
+            'hv31': {'avail': safe_int(item.findtext('hv31')), 'total': get_hvs(item, 'HVS05')},
+            'hv33': {'avail': safe_int(item.findtext('hv33')), 'total': get_hvs(item, 'HVS10')},
         },
         'isolation': {
             'hv13': {'avail': safe_int(item.findtext('hv13')), 'total': get_hvs(item, 'HVS46')},
@@ -5332,7 +5615,7 @@ def parse_hospital_data(item):
             'hv41': {'avail': safe_int(item.findtext('hv41')), 'total': get_hvs(item, 'HVS25')},
         },
         'equipment': equipment,
-        'exception': '✅ 정상',
+        'exception': ' 정상',
     }
 
 def should_show_row(hospitals_data, category, key):
@@ -5379,7 +5662,7 @@ def generate_comparison_html(hospitals_data):
                 if kw in name:
                     p = name.split(kw, 1)
                     if len(p) == 2: name = f"{p[0]}{kw}<br>{p[1]}"; has_lb = True; break
-        nc = 'hospital-name very-long-name' if name_length > 20 else ('hospital-name long-name' if name_length > 12 else 'hospital-name')
+        nc = 'hospital-name very-long-name' if name_length >20 else ('hospital-name long-name' if name_length >12 else 'hospital-name')
         u = h.get('update_time', '')
         us = f"<br><span style='font-size:0.7em;font-weight:normal;'>{u[:4]}-{u[4:6]}-{u[6:8]} {u[8:10]}:{u[10:12]}</span>" if u and len(u) >= 12 else ''
         level = h.get('level', '기관')
@@ -5446,7 +5729,7 @@ def generate_comparison_html(hospitals_data):
                 ea = ed.get('available', False) if isinstance(ed, dict) else ed
                 ec = ed.get('count', 1)          if isinstance(ed, dict) else 1
                 if ea:
-                    html += f'<td class="equipment-cell equipment-available">{ec if ec > 0 else 1}</td>'
+                    html += f'<td class="equipment-cell equipment-available">{ec if ec >0 else 1}</td>'
                 else:
                     html += '<td class="equipment-cell equipment-unavailable" style="font-size:1.03em;">X</td>'
             html += '</tr>'
@@ -5456,7 +5739,7 @@ def generate_comparison_html(hospitals_data):
     def _kiosk_cell_val(val_str):
         v = (val_str or '').strip()
         # '0' 포함: API가 0을 수용가능으로 반환하는 경우 → 굵은 O 표시
-        if v in ('Y', 'Y         ', '0'):
+        if v in ('Y', 'Y ', '0'):
             return 'ok', '<span style="font-weight:900;font-size:1.34em;color:#4CAF50;line-height:1;display:inline-block;">O</span>'
         if '불가' in v:
             # X: -20% (1.29em → 1.03em)
@@ -5464,7 +5747,7 @@ def generate_comparison_html(hospitals_data):
         if v == '정보미제공':
             return 'na', '<span style="color:#888;font-size:1.0em;">–</span>'
         if v:
-            return 'partial', '<span style="color:#e65100;font-size:1.1em;">⚠️</span>'
+            return 'partial', '<span style="color:#e65100;font-size:1.1em;"></span>'
         return 'none', ''
 
     kiosk_visible = []
@@ -5499,18 +5782,18 @@ def generate_comparison_html(hospitals_data):
     html += '<tr><td class="item-label">예외상황</td>'
     for h in hospitals_data:
         exc = h.get('exception', '정보 없음')
-        if exc.startswith('✅'):
+        if exc.startswith(''):
             duty_inf_raw = (h.get('duty_inf') or '').strip()
             if duty_inf_raw:
                 duty_lines = [s.strip() for s in duty_inf_raw.replace('，',',').split(',') if s.strip()]
-                duty_html = '<div style="color:#5a6a7e;font-weight:700;margin-left:5px;">🏥 상시 운영 제한:</div>'
+                duty_html = '<div style="color:#5a6a7e;font-weight:700;margin-left:5px;">상시 운영 제한:</div>'
                 for di in duty_lines:
                     duty_html += f'<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">{di}</div>'
                 html += (f'<td class="exception-cell exception-warning" '
                          f'style="text-align:left;padding:6px;vertical-align:top;">{duty_html}</td>')
             else:
                 html += ('<td class="exception-cell exception-ok">'
-                         '✅ <span style="color:#000;font-weight:normal;">없음</span></td>')
+                         ' <span style="color:#000;font-weight:normal;">없음</span></td>')
         else:
             un_lines  = []
             av_lines  = []
@@ -5533,11 +5816,11 @@ def generate_comparison_html(hospitals_data):
 
             result = []
             if un_lines:
-                result.append('<div style="color:#dc3545;font-weight:700;margin-left:5px;">★ 수용불가:</div>')
+                result.append('<div style="color:#dc3545;font-weight:700;margin-left:5px;">수용불가:</div>')
                 for item in un_lines:
                     result.append(f'<div style="margin-left:10px;color:#dc3545;line-height:1.3;">{item}</div>')
             if av_lines:
-                result.append('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">★ 수용가능:</div>')
+                result.append('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">수용가능:</div>')
                 for item in av_lines:
                     result.append(f'<div style="margin-left:10px;color:#28a745;line-height:1.3;">{item}</div>')
             if inq_lines:
@@ -5545,7 +5828,7 @@ def generate_comparison_html(hospitals_data):
                 for item in inq_lines:
                     result.append(f'<div style="margin-left:10px;color:#e67e00;line-height:1.3;">{item}</div>')
             if duty_inf_lines:
-                result.append('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">🏥 상시 운영 제한:</div>')
+                result.append('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">상시 운영 제한:</div>')
                 for item in duty_inf_lines:
                     result.append(f'<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">{item}</div>')
 
@@ -5577,31 +5860,31 @@ def format_birth_room_cell(bed_data):
         display = raw  # 그대로 표시
         bar_class, text_class = 'bar-green', 'green-text'
         return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                f'        <div class="bar {bar_class}" style="width:100%"></div>\n'
-                f'        <div class="bed-text-overlay {text_class}">{display}</div>\n'
-                f'    </div></div></td>')
+                f' <div class="bar {bar_class}" style="width:100%"></div>\n'
+                f' <div class="bed-text-overlay {text_class}">{display}</div>\n'
+                f' </div></div></td>')
 
     # Y 계열 → 가능 (100%)
     if raw_up.startswith('Y'):
-        total_str = f'/{total}' if total > 0 else ''
+        total_str = f'/{total}' if total >0 else ''
         display = f'가능{total_str}'
         return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                f'        <div class="bar bar-green" style="width:100%"></div>\n'
-                f'        <div class="bed-text-overlay green-text">{display}</div>\n'
-                f'    </div></div></td>')
+                f' <div class="bar bar-green" style="width:100%"></div>\n'
+                f' <div class="bed-text-overlay green-text">{display}</div>\n'
+                f' </div></div></td>')
 
     # N 계열 → 불가 (0%)
     if raw_up.startswith('N'):
         return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                f'        <div class="bar bar-red" style="width:0%"></div>\n'
-                f'        <div class="bed-text-overlay red-text">불가</div>\n'
-                f'    </div></div></td>')
+                f' <div class="bar bar-red" style="width:0%"></div>\n'
+                f' <div class="bed-text-overlay red-text">불가</div>\n'
+                f' </div></div></td>')
 
     # 그 외 문자열 그대로 표시 (예: "가능")
     return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-            f'        <div class="bar bar-green" style="width:100%"></div>\n'
-            f'        <div class="bed-text-overlay green-text">{raw}</div>\n'
-            f'    </div></div></td>')
+            f' <div class="bar bar-green" style="width:100%"></div>\n'
+            f' <div class="bed-text-overlay green-text">{raw}</div>\n'
+            f' </div></div></td>')
 
 
 def format_bed_cell(bed_data):
@@ -5609,7 +5892,7 @@ def format_bed_cell(bed_data):
     if avail == -1 and total <= 0:
         return '<td class="bed-cell"><div class="bed-info"><div class="bed-numbers" style="color:#000;">-</div></div></td>'
     if avail < 0:
-        display_text = f"{avail}/{total} ({round(avail/total*100)}%)" if total > 0 else str(avail)
+        display_text = f"{avail}/{total} ({round(avail/total*100)}%)" if total >0 else str(avail)
         return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">'
                 f'<div class="bar" style="width:0%;background:#cccccc;"></div>'
                 f'<div class="bed-text-overlay" style="color:#d32f2f;font-weight:900;">{display_text}</div>'
@@ -5626,14 +5909,14 @@ def format_bed_cell(bed_data):
                 f'</div></td>')
     pct = round(avail / total * 100)
     bar_width = min(100, pct)
-    if pct >= 50: bar_class, text_class = 'bar-green',  'green-text'
+    if pct >= 50: bar_class, text_class = 'bar-green', 'green-text'
     elif pct >= 20: bar_class, text_class = 'bar-yellow', 'yellow-text'
-    else:           bar_class, text_class = 'bar-red',    'red-text'
+    else:           bar_class, text_class = 'bar-red', 'red-text'
     display_text = f"{avail}/{total} ({pct}%)"
     return (f'<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-            f'        <div class="bar {bar_class}" style="width:{bar_width}%"></div>\n'
-            f'        <div class="bed-text-overlay {text_class}">{display_text}</div>\n'
-            f'    </div></div></td>')
+            f' <div class="bar {bar_class}" style="width:{bar_width}%"></div>\n'
+            f' <div class="bed-text-overlay {text_class}">{display_text}</div>\n'
+            f' </div></div></td>')
 
 
 
@@ -5647,7 +5930,7 @@ def format_bed_cell(bed_data):
 #  변경: 열 정렬, 숫자/분모 표시, 가는 색상 바, 카운트다운 프로그레스
 # ══════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════
-#  💾 HTML 저장 (내보내기) — 서버(파이썬) 없이 단독 동작하는 조회화면
+#   HTML 저장 (내보내기) — 서버(파이썬) 없이 단독 동작하는 조회화면
 #  - 병원 구성(h 파라미터)과 서비스키, CSS(폰트 크기 확정)를 굽고,
 #    데이터 조회/파싱/렌더링 로직 전체를 JS로 이식해 내장한다.
 #  - 갱신 시 브라우저가 apis.data.go.kr 를 직접 호출하며,
@@ -5671,7 +5954,14 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <h1><span class="h1-main">응급의료상황판</span><span class="h1-sub">&nbsp;(🕐&nbsp;<span id="queryTime">--:--:--</span>&nbsp;기준)</span></h1>
+        <div class="hdr-row">
+            <h1><span class="h1-main">응급의료상황판</span></h1>
+            <div class="hdr-right">
+                <span class="h1-sub">(<span id="queryTime">--:--:--</span>기준)</span>
+                <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
+                        onclick="ermonBackToSelect()">← 병원 선택</button>
+            </div>
+        </div>
         <div class="refresh-controls">
             <label for="refreshInterval">갱신주기:</label>
             <select id="refreshInterval">
@@ -5684,12 +5974,33 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
                 <option value="custom">직접입력</option>
             </select>
             <button id="refreshNow">즉시 갱신</button>
-            <label style="font-weight:normal;"><input type="checkbox" id="allowProxy" checked> 프록시 허용</label>
-            <button id="miniBtn" title="항상 위 미니창">📺 미니창</button>
-            <button id="miniStyleBtn" title="미니창 스타일">⚙</button>
-            <button id="secBtn" title="표시 항목 설정">🧩</button>
+            <label style="font-weight:normal;"><input type="checkbox" id="allowProxy" checked>프록시 허용</label>
+            <button id="miniBtn" title="항상 위 미니창">미니창</button>
+            <button id="miniStyleBtn" title="미니창 스타일">스타일</button>
+            <button id="secBtn" title="표시 항목 설정">표시 항목</button>
             <span class="ex-status" id="exStatus">대기</span>
         </div>
+        <script>
+        // 병원 선택 화면 복귀 + 안드로이드 백버튼 가로채기(앱 종료 방지)
+        function ermonBackToSelect() {
+            try {
+                if (location.protocol === 'http:' || location.protocol === 'https:') {
+                    location.href = '/';
+                    return;
+                }
+            } catch (e) {}
+            try { if (history.length >1) { history.back(); return; } } catch (e) {}
+            try { window.close(); } catch (e) {}
+        }
+        (function () {
+            try {
+                history.pushState({ ermon: 1 }, '', location.href);
+                window.addEventListener('popstate', function () {
+                    ermonBackToSelect();
+                });
+            } catch (e) {}
+        })();
+        </script>
         <div style="margin: 0 0 0 0; padding-top: 0;">
             <div class="bed-cell" style="max-width: 400px; margin: 0 auto; padding: 0;">
                 <div class="bed-info">
@@ -5698,14 +6009,14 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
                         <div class="bed-text-overlay green-text" id="globalRefreshOverlay"
                              style="font-size:0.60em;white-space:nowrap;overflow:visible;
                                     top:50%;transform:translate(-50%,-50%);line-height:1;">
-                             ⏰ <span id="globalRefreshText">--:--</span>
+                              <span id="globalRefreshText">--:--</span>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
-    <div id="exBody"><div class="ex-err" style="color:#667eea;">⏳ 병상 정보를 불러오는 중...</div></div>
+    <div id="exBody"><div class="ex-err" style="color:#667eea;">병상 정보를 불러오는 중...</div></div>
     <div class="ex-note">저장본 생성: __GENERATED__ · 병원 구성 고정 · 데이터는 국립중앙의료원 API에서 갱신됩니다</div>
     <script>
 /*EX-ENGINE-START*/
@@ -5736,42 +6047,42 @@ var EX = (function () {
     }
     function getHvs(item, tagName) {               // 대문자 우선, 없으면 소문자
         var list = item.getElementsByTagName(tagName.toUpperCase());
-        if (list && list.length > 0) return safeInt(list[0].textContent || '');
+        if (list && list.length >0) return safeInt(list[0].textContent || '');
         return safeInt(txt(item, tagName.toLowerCase()) || nullIfMissing(item, tagName.toLowerCase()));
     }
     function nullIfMissing(item, tag) {            // 소문자 태그 부재 시 null → safeInt(-1)
         var l = item.getElementsByTagName(tag);
-        return (l && l.length > 0) ? (l[0].textContent || '') : null;
+        return (l && l.length >0) ? (l[0].textContent || '') : null;
     }
     function pyRound(x) {                          // 파이썬 round (은행가 반올림)
         var f = Math.floor(x), d = x - f;
         if (d < 0.5) return f;
-        if (d > 0.5) return f + 1;
+        if (d >0.5) return f + 1;
         return (f % 2 === 0) ? f : f + 1;
     }
 
     // ── 코드맵 (원본과 동일) ─────────────────────────────────────
     var D_CODE_MAP = {
-        'D001': '내과',          'D002': '소아청소년과',   'D003': '신경과',
-        'D004': '정신건강의학과', 'D005': '피부과',         'D006': '외과',
-        'D007': '흉부외과',      'D008': '정형외과',       'D009': '신경외과',
-        'D010': '성형외과',      'D011': '산부인과',       'D012': '안과',
-        'D013': '이비인후과',    'D014': '비뇨기과',       'D016': '재활의학과',
-        'D017': '마취통증의학과','D018': '영상의학과',     'D019': '치료방사선과',
-        'D020': '임상병리과',    'D021': '해부병리과',     'D022': '가정의학과',
-        'D023': '핵의학과',      'D024': '응급의학과',     'D026': '치과',
+        'D001': '내과', 'D002': '소아청소년과', 'D003': '신경과',
+        'D004': '정신건강의학과', 'D005': '피부과', 'D006': '외과',
+        'D007': '흉부외과', 'D008': '정형외과', 'D009': '신경외과',
+        'D010': '성형외과', 'D011': '산부인과', 'D012': '안과',
+        'D013': '이비인후과', 'D014': '비뇨기과', 'D016': '재활의학과',
+        'D017': '마취통증의학과','D018': '영상의학과', 'D019': '치료방사선과',
+        'D020': '임상병리과', 'D021': '해부병리과', 'D022': '가정의학과',
+        'D023': '핵의학과', 'D024': '응급의학과', 'D026': '치과',
         'D034': '구강악안면외과'
     };
     var MKIOSK_MAP = {
-        'MKioskTy1':  '응급실 수용',
-        'MKioskTy2':  '[재관류중재술] 심근경색',
-        'MKioskTy3':  '[재관류중재술] 뇌경색',
-        'MKioskTy4':  '[뇌출혈수술] 거미막하출혈',
-        'MKioskTy5':  '[뇌출혈수술] 거미막하출혈 외',
-        'MKioskTy6':  '[대동맥응급] 흉부',
-        'MKioskTy7':  '[대동맥응급] 복부',
-        'MKioskTy8':  '[담낭담관질환] 담낭질환',
-        'MKioskTy9':  '[담낭담관질환] 담도포함질환',
+        'MKioskTy1': '응급실 수용',
+        'MKioskTy2': '[재관류중재술] 심근경색',
+        'MKioskTy3': '[재관류중재술] 뇌경색',
+        'MKioskTy4': '[뇌출혈수술] 거미막하출혈',
+        'MKioskTy5': '[뇌출혈수술] 거미막하출혈 외',
+        'MKioskTy6': '[대동맥응급] 흉부',
+        'MKioskTy7': '[대동맥응급] 복부',
+        'MKioskTy8': '[담낭담관질환] 담낭질환',
+        'MKioskTy9': '[담낭담관질환] 담도포함질환',
         'MKioskTy10': '[복부응급수술] 비외상',
         'MKioskTy11': '[장중첩/폐색] 영유아',
         'MKioskTy12': '[응급내시경] 성인 위장관',
@@ -5793,7 +6104,7 @@ var EX = (function () {
         'MKioskTy28': '[영상의학혈관중재] 영유아'
     };
     var Y_CODE_MAP = {
-        'Y000':  '응급실',
+        'Y000': '응급실',
         'Y0010': '[재관류중재술] 심근경색',
         'Y0020': '[재관류중재술] 뇌경색',
         'Y0031': '[뇌출혈수술] 거미막하출혈',
@@ -5827,8 +6138,8 @@ var EX = (function () {
     var API_BASE = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService';
     var PROXIES = [
         { name: '직접',                wrap: function (u) { return u; } },
-        { name: '프록시(allorigins)',  wrap: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); } },
-        { name: '프록시(corsproxy)',   wrap: function (u) { return 'https://corsproxy.io/?url=' + encodeURIComponent(u); } }
+        { name: '프록시(allorigins)', wrap: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); } },
+        { name: '프록시(corsproxy)', wrap: function (u) { return 'https://corsproxy.io/?url=' + encodeURIComponent(u); } }
     ];
     var netMode = 0;   // 최근 성공한 경로를 기억
 
@@ -5849,7 +6160,7 @@ var EX = (function () {
             var text = await r.text();
             if (text.indexOf('<') === -1) throw new Error('XML 아님');
             var doc = parseXml(text);
-            if (doc.getElementsByTagName('parsererror').length > 0) throw new Error('XML 파싱 실패');
+            if (doc.getElementsByTagName('parsererror').length >0) throw new Error('XML 파싱 실패');
             return doc;
         } finally { if (timer) clearTimeout(timer); }
     }
@@ -5881,7 +6192,7 @@ var EX = (function () {
     }
     function txt2(item, tag) {                     // findtext: 부재 시 null 취급
         var l = item.getElementsByTagName(tag);
-        return (l && l.length > 0) ? (l[0].textContent || '') : null;
+        return (l && l.length >0) ? (l[0].textContent || '') : null;
     }
     function parseHospitalData(item) {
         function eq(ayn, cnt) {
@@ -5889,28 +6200,28 @@ var EX = (function () {
             return { available: avail, count: avail ? safeInt(txt2(item, cnt)) : 0 };
         }
         var equipment = {
-            'ct':                 eq('hvctayn',     'hvs27'),
-            'mri':                eq('hvmriayn',    'hvs28'),
-            'angio':              eq('hvangioayn',  'hvs29'),
-            'ventilator':         eq('hvventiayn',  'hvs30'),
+            'ct': eq('hvctayn', 'hvs27'),
+            'mri': eq('hvmriayn', 'hvs28'),
+            'angio': eq('hvangioayn', 'hvs29'),
+            'ventilator': eq('hvventiayn', 'hvs30'),
             'ventilator_preemie': eq('hvventisoayn','hvs31'),
-            'incubator':          eq('hvincuayn',   'hvs32'),
-            'crrt':               eq('hvcrrtayn',   'hvs33'),
-            'ecmo':               eq('hvecmoayn',   'hvs34'),
-            'hypothermia':        eq('hvhypoayn',   'hvs35'),
-            'hyperbaric':         eq('hvoxyayn',    'hvs37')
+            'incubator': eq('hvincuayn', 'hvs32'),
+            'crrt': eq('hvcrrtayn', 'hvs33'),
+            'ecmo': eq('hvecmoayn', 'hvs34'),
+            'hypothermia': eq('hvhypoayn', 'hvs35'),
+            'hyperbaric': eq('hvoxyayn', 'hvs37')
         };
         var hv42raw = (txt2(item, 'hv42') || '').trim();
         return {
-            'hpid':        txt2(item, 'hpid') || '',
-            'name':        txt2(item, 'dutyName') || '알 수 없음',
-            'dutyAddr':    txt2(item, 'dutyAddr') || '',
-            'dutyTel1':    txt2(item, 'dutyTel1') || '',
-            'dutyTel3':    txt2(item, 'dutyTel3') || '',
+            'hpid': txt2(item, 'hpid') || '',
+            'name': txt2(item, 'dutyName') || '알 수 없음',
+            'dutyAddr': txt2(item, 'dutyAddr') || '',
+            'dutyTel1': txt2(item, 'dutyTel1') || '',
+            'dutyTel3': txt2(item, 'dutyTel3') || '',
             'update_time': txt2(item, 'hvidate') || '',
-            'emcls':       '',
-            'emclsName':   '',
-            'level':       '기관',
+            'emcls': '',
+            'emclsName': '',
+            'level': '기관',
             'emergency': {
                 'hvec': bedPair(item, 'hvec', 'HVS01'),
                 'hv28': bedPair(item, 'hv28', 'HVS02'),
@@ -5919,17 +6230,17 @@ var EX = (function () {
             },
             'icu': {
                 'hvicc': bedPair(item, 'hvicc', 'HVS17'),
-                'hv2':   bedPair(item, 'hv2',   'HVS06'),
-                'hv3':   bedPair(item, 'hv3',   'HVS07'),
+                'hv2': bedPair(item, 'hv2', 'HVS06'),
+                'hv3': bedPair(item, 'hv3', 'HVS07'),
                 'hvncc': bedPair(item, 'hvncc', 'HVS08'),
-                'hv32':  bedPair(item, 'hv32',  'HVS09'),
-                'hvcc':  bedPair(item, 'hvcc',  'HVS11'),
-                'hv6':   bedPair(item, 'hv6',   'HVS12'),
-                'hv34':  bedPair(item, 'hv34',  'HVS15'),
+                'hv32': bedPair(item, 'hv32', 'HVS09'),
+                'hvcc': bedPair(item, 'hvcc', 'HVS11'),
+                'hv6': bedPair(item, 'hv6', 'HVS12'),
+                'hv34': bedPair(item, 'hv34', 'HVS15'),
                 'hvccc': bedPair(item, 'hvccc', 'HVS16'),
-                'hv35':  bedPair(item, 'hv35',  'HVS18'),
-                'hv31':  bedPair(item, 'hv31',  'HVS05'),
-                'hv33':  bedPair(item, 'hv33',  'HVS10')
+                'hv35': bedPair(item, 'hv35', 'HVS18'),
+                'hv31': bedPair(item, 'hv31', 'HVS05'),
+                'hv33': bedPair(item, 'hv33', 'HVS10')
             },
             'isolation': {
                 'hv13': bedPair(item, 'hv13', 'HVS46'),
@@ -5954,7 +6265,7 @@ var EX = (function () {
                 'hv41': bedPair(item, 'hv41', 'HVS25')
             },
             'equipment': equipment,
-            'exception': '✅ 정상'
+            'exception': ' 정상'
         };
     }
     function hospitalLevel(emcls, name) {
@@ -6029,8 +6340,8 @@ var EX = (function () {
                     if (!seen[msgs[k]]) { seen[msgs[k]] = 1; uniq.push(msgs[k]); }
                 return uniq.join('\n');
             }
-            return '✅ 정상';
-        } catch (e) { return '✅ 정상'; }
+            return ' 정상';
+        } catch (e) { return ' 정상'; }
     }
     async function fetchBasicInfo(hpid) {
         try {
@@ -6061,7 +6372,7 @@ var EX = (function () {
     }
     function txt2b(item, tag) {
         var l = item.getElementsByTagName(tag);
-        return (l && l.length > 0) ? (l[0].textContent || '') : '';
+        return (l && l.length >0) ? (l[0].textContent || '') : '';
     }
 
     // ── 렌더링 (generate_comparison_html 바이트 동일 이식) ────────
@@ -6089,7 +6400,7 @@ var EX = (function () {
         if (avail === -1 && total <= 0)
             return '<td class="bed-cell"><div class="bed-info"><div class="bed-numbers" style="color:#000;">-</div></div></td>';
         if (avail < 0) {
-            var dt = total > 0 ? (avail + '/' + total + ' (' + pyRound(avail / total * 100) + '%)') : String(avail);
+            var dt = total >0 ? (avail + '/' + total + ' (' + pyRound(avail / total * 100) + '%)') : String(avail);
             return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">'
                  + '<div class="bar" style="width:0%;background:#cccccc;"></div>'
                  + '<div class="bed-text-overlay" style="color:#d32f2f;font-weight:900;">' + dt + '</div>'
@@ -6108,14 +6419,14 @@ var EX = (function () {
         var pct = pyRound(avail / total * 100);
         var bw = Math.min(100, pct);
         var bc, tc;
-        if (pct >= 50)      { bc = 'bar-green';  tc = 'green-text'; }
+        if (pct >= 50)      { bc = 'bar-green'; tc = 'green-text'; }
         else if (pct >= 20) { bc = 'bar-yellow'; tc = 'yellow-text'; }
-        else                { bc = 'bar-red';    tc = 'red-text'; }
+        else                { bc = 'bar-red'; tc = 'red-text'; }
         var dtext = avail + '/' + total + ' (' + pct + '%)';
         return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-             + '        <div class="bar ' + bc + '" style="width:' + bw + '%"></div>\n'
-             + '        <div class="bed-text-overlay ' + tc + '">' + dtext + '</div>\n'
-             + '    </div></div></td>';
+             + ' <div class="bar ' + bc + '" style="width:' + bw + '%"></div>\n'
+             + ' <div class="bed-text-overlay ' + tc + '">' + dtext + '</div>\n'
+             + ' </div></div></td>';
     }
     function formatBirthRoomCell(bd) {
         var raw = bd.raw || '', total = (bd.total === undefined ? -1 : bd.total);
@@ -6126,37 +6437,37 @@ var EX = (function () {
             return formatBedCell({ avail: parseInt(raw.trim(), 10), total: total });
         if (raw.indexOf('/') !== -1 && rawUp.indexOf('N') !== 0) {
             return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                 + '        <div class="bar bar-green" style="width:100%"></div>\n'
-                 + '        <div class="bed-text-overlay green-text">' + raw + '</div>\n'
-                 + '    </div></div></td>';
+                 + ' <div class="bar bar-green" style="width:100%"></div>\n'
+                 + ' <div class="bed-text-overlay green-text">' + raw + '</div>\n'
+                 + ' </div></div></td>';
         }
         if (rawUp.indexOf('Y') === 0) {
-            var ts = total > 0 ? ('/' + total) : '';
+            var ts = total >0 ? ('/' + total) : '';
             return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                 + '        <div class="bar bar-green" style="width:100%"></div>\n'
-                 + '        <div class="bed-text-overlay green-text">가능' + ts + '</div>\n'
-                 + '    </div></div></td>';
+                 + ' <div class="bar bar-green" style="width:100%"></div>\n'
+                 + ' <div class="bed-text-overlay green-text">가능' + ts + '</div>\n'
+                 + ' </div></div></td>';
         }
         if (rawUp.indexOf('N') === 0) {
             return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-                 + '        <div class="bar bar-red" style="width:0%"></div>\n'
-                 + '        <div class="bed-text-overlay red-text">불가</div>\n'
-                 + '    </div></div></td>';
+                 + ' <div class="bar bar-red" style="width:0%"></div>\n'
+                 + ' <div class="bed-text-overlay red-text">불가</div>\n'
+                 + ' </div></div></td>';
         }
         return '<td class="bed-cell"><div class="bed-info"><div class="bar-container">\n'
-             + '        <div class="bar bar-green" style="width:100%"></div>\n'
-             + '        <div class="bed-text-overlay green-text">' + raw + '</div>\n'
-             + '    </div></div></td>';
+             + ' <div class="bar bar-green" style="width:100%"></div>\n'
+             + ' <div class="bed-text-overlay green-text">' + raw + '</div>\n'
+             + ' </div></div></td>';
     }
     function kioskCellVal(valStr) {
         var v = (valStr || '').trim();
-        if (v === 'Y' || v === 'Y         ' || v === '0')
+        if (v === 'Y' || v === 'Y ' || v === '0')
             return ['ok', '<span style="font-weight:900;font-size:1.34em;color:#4CAF50;line-height:1;display:inline-block;">O</span>'];
         if (v.indexOf('불가') !== -1)
             return ['ng', '<span style="font-size:1.03em;color:#C62828;font-weight:700;line-height:1;">X</span>'];
         if (v === '정보미제공')
             return ['na', '<span style="color:#888;font-size:1.0em;">–</span>'];
-        if (v) return ['partial', '<span style="color:#e65100;font-size:1.1em;">⚠️</span>'];
+        if (v) return ['partial', '<span style="color:#e65100;font-size:1.1em;"></span>'];
         return ['none', ''];
     }
     function renderComparison(hd, withBells) {
@@ -6185,8 +6496,8 @@ var EX = (function () {
                     }
                 }
             }
-            var nc = nameLength > 20 ? 'hospital-name very-long-name'
-                   : (nameLength > 12 ? 'hospital-name long-name' : 'hospital-name');
+            var nc = nameLength >20 ? 'hospital-name very-long-name'
+                   : (nameLength >12 ? 'hospital-name long-name' : 'hospital-name');
             var u = h.update_time || '';
             var us = (u && u.length >= 12)
                 ? "<br><span style='font-size:0.7em;font-weight:normal;'>" + u.slice(0, 4) + '-' + u.slice(4, 6) + '-' + u.slice(6, 8) + ' ' + u.slice(8, 10) + ':' + u.slice(10, 12) + '</span>'
@@ -6251,7 +6562,7 @@ var EX = (function () {
                     var ed = (h.equipment || {})[p[1]] || {};
                     var ea = ed.available === undefined ? false : ed.available;
                     var ec = ed.count === undefined ? 1 : ed.count;
-                    if (ea) html += '<td class="equipment-cell equipment-available">' + (ec > 0 ? ec : 1) + '</td>';
+                    if (ea) html += '<td class="equipment-cell equipment-available">' + (ec >0 ? ec : 1) + '</td>';
                     else    html += '<td class="equipment-cell equipment-unavailable" style="font-size:1.03em;">X</td>';
                 });
                 html += '</tr>';
@@ -6287,15 +6598,15 @@ var EX = (function () {
         html += '<tr><td class="item-label">예외상황</td>';
         hd.forEach(function (h) {
             var exc = h.exception === undefined ? '정보 없음' : h.exception;
-            if (exc.indexOf('✅') === 0) {
+            if (exc.indexOf('') === 0) {
                 var dutyRaw = (h.duty_inf || '').trim();
                 if (dutyRaw) {
                     var dl = dutyRaw.replace(/，/g, ',').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-                    var dh = '<div style="color:#5a6a7e;font-weight:700;margin-left:5px;">🏥 상시 운영 제한:</div>';
+                    var dh = '<div style="color:#5a6a7e;font-weight:700;margin-left:5px;">상시 운영 제한:</div>';
                     dl.forEach(function (di) { dh += '<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">' + di + '</div>'; });
                     html += '<td class="exception-cell exception-warning" style="text-align:left;padding:6px;vertical-align:top;">' + dh + '</td>';
                 } else {
-                    html += '<td class="exception-cell exception-ok">✅ <span style="color:#000;font-weight:normal;">없음</span></td>';
+                    html += '<td class="exception-cell exception-ok"> <span style="color:#000;font-weight:normal;">없음</span></td>';
                 }
             } else {
                 var un = [], av = [], inq = [];
@@ -6311,11 +6622,11 @@ var EX = (function () {
                 var dl2 = dutyRaw2 ? dutyRaw2.replace(/，/g, ',').split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
                 var res = [];
                 if (un.length) {
-                    res.push('<div style="color:#dc3545;font-weight:700;margin-left:5px;">★ 수용불가:</div>');
+                    res.push('<div style="color:#dc3545;font-weight:700;margin-left:5px;">수용불가:</div>');
                     un.forEach(function (it) { res.push('<div style="margin-left:10px;color:#dc3545;line-height:1.3;">' + it + '</div>'); });
                 }
                 if (av.length) {
-                    res.push('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">★ 수용가능:</div>');
+                    res.push('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">수용가능:</div>');
                     av.forEach(function (it) { res.push('<div style="margin-left:10px;color:#28a745;line-height:1.3;">' + it + '</div>'); });
                 }
                 if (inq.length) {
@@ -6323,7 +6634,7 @@ var EX = (function () {
                     inq.forEach(function (it) { res.push('<div style="margin-left:10px;color:#e67e00;line-height:1.3;">' + it + '</div>'); });
                 }
                 if (dl2.length) {
-                    res.push('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">🏥 상시 운영 제한:</div>');
+                    res.push('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">상시 운영 제한:</div>');
                     dl2.forEach(function (it) { res.push('<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">' + it + '</div>'); });
                 }
                 var fmt = res.length ? res.join('') : exc;
@@ -6395,9 +6706,9 @@ var EX = (function () {
 
         var msgs = {};
         for (var i = 0; i < hpids.length; i++) {
-            try { msgs[hpids[i]] = await msgP[hpids[i]]; } catch (e) { msgs[hpids[i]] = '✅ 정상'; }
+            try { msgs[hpids[i]] = await msgP[hpids[i]]; } catch (e) { msgs[hpids[i]] = ' 정상'; }
         }
-        hd.forEach(function (h) { h.exception = msgs.hasOwnProperty(h.hpid) ? msgs[h.hpid] : '✅ 정상'; });
+        hd.forEach(function (h) { h.exception = msgs.hasOwnProperty(h.hpid) ? msgs[h.hpid] : ' 정상'; });
         for (var j = 0; j < hpids.length; j++) {
             var duty = '';
             try { duty = await basicP[hpids[j]]; } catch (e) { duty = ''; }
@@ -6507,7 +6818,7 @@ var EX = (function () {
         rows.forEach(function (h) { if (!seen[h.hpid]) { seen[h.hpid] = 1; uniq.push(h); } });
         uniq.sort(function (a, c) {
             var ka = a.sido + a.gugun + a.name, kc = c.sido + c.gugun + c.name;
-            return ka < kc ? -1 : (ka > kc ? 1 : 0);
+            return ka < kc ? -1 : (ka >kc ? 1 : 0);
         });
         _rosterCache = uniq;
         setStatus('전국 ' + uniq.length + '개');
@@ -6550,7 +6861,7 @@ var EX = (function () {
     }
     function bedObj(p) {
         var a = p[0], t = p[1];
-        return { a: a, t: t, r: t > 0 ? Math.round(Math.max(0, (t - a) / t) * 10000) / 10000 : null };
+        return { a: a, t: t, r: t >0 ? Math.round(Math.max(0, (t - a) / t) * 10000) / 10000 : null };
     }
     function baci(er, ward, icu, adm) {
         var E = er.r; if (E === null) return null;
@@ -6722,7 +7033,7 @@ var EX = (function () {
         function schedule() {
             if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
             if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-            if (currentInterval > 0) {
+            if (currentInterval >0) {
                 nextRefreshTime = Date.now() + currentInterval;
                 refreshTimer = setTimeout(doRefresh, currentInterval);
                 countdownTimer = setInterval(updateBar, 1000);
@@ -6739,7 +7050,7 @@ var EX = (function () {
                     var msg = '병상 데이터를 가져오지 못했습니다.';
                     if (r.errors.length) msg += '<br><br>' + r.errors.join('<br>');
                     msg += '<br><br>· 인터넷 연결을 확인하세요.<br>· 직접 호출이 차단된 환경이면 상단의 "프록시 허용"을 켜고 다시 시도하세요.';
-                    document.getElementById('exBody').innerHTML = '<div class="ex-err">⚠️ ' + msg + '</div>';
+                    document.getElementById('exBody').innerHTML = '<div class="ex-err"> ' + msg + '</div>';
                 } else {
                     document.getElementById('exBody').innerHTML = EX.renderComparison(r.hd, false);
                     try { EXSEC.apply(); } catch (e) {}
@@ -6752,8 +7063,8 @@ var EX = (function () {
                         var tline = r.hd.map(function (h) {
                             var b = (h.emergency || {}).hvec || {};
                             var a = (b.avail === undefined || b.avail < 0) ? '?' : b.avail;
-                            var t = (b.total > 0) ? b.total : '?';
-                            var nm = h.name.length > 5 ? h.name.slice(0, 5) : h.name;
+                            var t = (b.total >0) ? b.total : '?';
+                            var nm = h.name.length >5 ? h.name.slice(0, 5) : h.name;
                             return nm + ' ' + a + '/' + t;
                         }).join(' | ');
                         var tfull = tline + ' (' + document.getElementById('queryTime').textContent.slice(0, 5) + ')';
@@ -6765,7 +7076,7 @@ var EX = (function () {
                 }
             } catch (e) {
                 document.getElementById('exBody').innerHTML =
-                    '<div class="ex-err">⚠️ 갱신 실패: ' + (e && e.message ? e.message : e) + '</div>';
+                    '<div class="ex-err">갱신 실패: ' + (e && e.message ? e.message : e) + '</div>';
             }
             isRefreshing = false;
             schedule();
@@ -6807,7 +7118,7 @@ var EX = (function () {
                 document.body.appendChild(span);
                 var textW = span.getBoundingClientRect().width;
                 document.body.removeChild(span);
-                if (textW > containerW - 2) {
+                if (textW >containerW - 2) {
                     var ratio = (containerW - 2) / textW;
                     overlay.style.fontSize = Math.max(curFontSize * ratio * 0.97, 5) + 'px';
                 }
@@ -6818,14 +7129,14 @@ var EX = (function () {
                 var tableW = tbl ? tbl.clientWidth : 0;
                 var fth = document.querySelector('.comparison-table thead th');
                 var firstColW = fth ? fth.clientWidth : 0;
-                var cellW = tableW > 0 ? (tableW - firstColW) / numCols : 0;
-                if (cellW > 0) {
+                var cellW = tableW >0 ? (tableW - firstColW) / numCols : 0;
+                if (cellW >0) {
                     document.querySelectorAll('.comparison-table td:not(.item-label):not(.category-header)').forEach(function (td) {
                         var inner = td.querySelector('.bed-numbers, .equipment-cell, .bed-cell');
                         var el = inner || td;
                         el.style.fontSize = '';
                         var curSz = parseFloat(window.getComputedStyle(el).fontSize);
-                        if (el.scrollWidth > cellW + 4) {
+                        if (el.scrollWidth >cellW + 4) {
                             var ratio = cellW / el.scrollWidth;
                             el.style.fontSize = Math.max(curSz * ratio * 0.95, 6) + 'px';
                         }
@@ -6835,7 +7146,7 @@ var EX = (function () {
         }
         window.addEventListener('resize', function () { try { fitBedTexts(); } catch (e) {} });
 
-        // ── 🧩 표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
+        // ──  표시 항목 · 순서 설정 (py/저장본 공용, localStorage 영구 기억) ──
         var EXSEC = (function () {
             var CATS = ['응급실', '중환자실', '격리진료구역', '입원실', '기타', '의료장비',
                         '중증질환 수용가능', '예외상황'];
@@ -6905,7 +7216,7 @@ var EX = (function () {
                     }).join('');
                     wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:340px;'
                         + 'width:88vw;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                        + '<div style="font-weight:700;margin-bottom:6px;">🧩 표시 항목 · 순서</div>'
+                        + '<div style="font-weight:700;margin-bottom:6px;">표시 항목 · 순서</div>'
                         + '<div style="max-height:52vh;overflow:auto;">' + rows + '</div>'
                         + '<div style="display:flex;gap:8px;margin-top:10px;">'
                         + '<button id="secMin" style="flex:1;padding:8px;border:none;border-radius:10px;'
@@ -6930,7 +7241,7 @@ var EX = (function () {
                     var dn = t.getAttribute ? t.getAttribute('data-dn') : null;
                     if (up !== null) {
                         var i = parseInt(up);
-                        if (i > 0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
+                        if (i >0) { var x = c.order[i]; c.order[i] = c.order[i - 1]; c.order[i - 1] = x; }
                         save(c); apply(); build(); return;
                     }
                     if (dn !== null) {
@@ -6954,7 +7265,7 @@ var EX = (function () {
         })();
         try { EXSEC.apply(); } catch (e) {}
 
-        // ── 📺 미니창(항상 위): PC=Document PiP, Android=canvas→video PiP ──
+        // ──  미니창(항상 위): PC=Document PiP, Android=canvas→video PiP ──
         var MINI = (function () {
             var docWin = null, video = null, canvas = null, track = null, lastHd = null;
             // 스타일 (사양: 각진 모서리 / 얇은 검정 실선 / 보라 70% / 굵은 녹색 시스템폰트)
@@ -6973,11 +7284,11 @@ var EX = (function () {
             var lockW = 0, lockH = 0;   // PiP 중 캔버스 해상도 고정
             // ── 스타일 샘플(프리셋)·투명도·탭 변경 유틸 ──
             var PRESETS = [
-                { name: '검정',   s: { radius: 0,  border: '1px solid #555', bg: 'rgba(0,0,0,0.85)', bgSolid: '#000000', color: '#ffffff', weight: '700', fontSize: 44, opacity: 85 } },
+                { name: '검정', s: { radius: 0,  border: '1px solid #555', bg: 'rgba(0,0,0,0.85)', bgSolid: '#000000', color: '#ffffff', weight: '700', fontSize: 44, opacity: 85 } },
                 { name: '화이트', s: { radius: 10, border: '1px solid #bbb', bg: 'rgba(255,255,255,0.92)', bgSolid: '#f2f2f2', color: '#111111', weight: '700', fontSize: 44, opacity: 92 } },
-                { name: '유리',   s: { radius: 14, border: '1px solid #9ec1d9', bg: 'rgba(210,230,245,0.55)', bgSolid: '#d7e6f2', color: '#0b2b45', weight: '700', fontSize: 44, opacity: 55 } },
-                { name: '고대비', s: { radius: 0,  border: '2px solid #ffffff', bg: 'rgba(0,0,0,0.95)', bgSolid: '#000000', color: '#ffee00', weight: '800', fontSize: 48, opacity: 95 } },
-                { name: '녹색',   s: { radius: 6,  border: '1px solid #00aa55', bg: 'rgba(0,40,25,0.85)', bgSolid: '#002819', color: '#4dff9d', weight: '700', fontSize: 44, opacity: 85 } }
+                { name: '유리', s: { radius: 14, border: '1px solid #9ec1d9', bg: 'rgba(210,230,245,0.55)', bgSolid: '#d7e6f2', color: '#0b2b45', weight: '700', fontSize: 44, opacity: 55 } },
+                { name: '고대비', s: { radius: 0, border: '2px solid #ffffff', bg: 'rgba(0,0,0,0.95)', bgSolid: '#000000', color: '#ffee00', weight: '800', fontSize: 48, opacity: 95 } },
+                { name: '녹색', s: { radius: 6,  border: '1px solid #00aa55', bg: 'rgba(0,40,25,0.85)', bgSolid: '#002819', color: '#4dff9d', weight: '700', fontSize: 44, opacity: 85 } }
             ];
             var presetIdx = 0;
             function styleGet(k) { return MINI_STYLE[k]; }
@@ -6985,7 +7296,7 @@ var EX = (function () {
             var IV_CYCLE = [60000, 180000, 300000, 600000, 0];
             function _ivLabel() {
                 var v = currentInterval;
-                if (!(v > 0)) return '수동';
+                if (!(v >0)) return '수동';
                 return v >= 60000 ? Math.round(v / 60000) + '분' : Math.round(v / 1000) + '초';
             }
             function setMainInterval(ms) {   // 미니창 ↔ 메인 주기 완전 동기
@@ -7012,7 +7323,7 @@ var EX = (function () {
                 if (s2.charAt(0) === '#' && s2.length === 7) {
                     var v = parseInt(s2.slice(1), 16);
                     if (!isNaN(v))
-                        return 'rgba(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ',' + a + ')';
+                        return 'rgba(' + ((v >>16) & 255) + ',' + ((v >>8) & 255) + ',' + (v & 255) + ',' + a + ')';
                 }
                 return cs;
             }
@@ -7037,7 +7348,7 @@ var EX = (function () {
             // PiP창과 동일한 3지표: 응급(hvec) · 입원(hvgc+hv36 합산) · 중환(hvicc)
             function metricsOf(h) {
                 function pv(p) { return { a: (p && p.avail !== undefined) ? p.avail : -1,
-                                          t: (p && p.total > 0) ? p.total : 0 }; }
+                                          t: (p && p.total >0) ? p.total : 0 }; }
                 var e  = pv((h.emergency || {}).hvec);
                 var g1 = pv((h.general || {}).hvgc), g2 = pv((h.general || {}).hv36);
                 var ga = (g1.a < 0 && g2.a < 0) ? -1 : Math.max(g1.a, 0) + Math.max(g2.a, 0);
@@ -7061,7 +7372,7 @@ var EX = (function () {
                 if (p >= 0.2) return { bright: '#EDBB4A', dark: '#58400A' };
                 return { bright: '#E05550', dark: '#511210' };
             }
-            function valTxt(a, t) { return (a < 0 ? '-' : a) + '/' + (t > 0 ? t : '-'); }
+            function valTxt(a, t) { return (a < 0 ? '-' : a) + '/' + (t >0 ? t : '-'); }
             function nowTs() {
                 try { return document.getElementById('queryTime').textContent.slice(0, 5); }
                 catch (e) { return ''; }
@@ -7080,7 +7391,7 @@ var EX = (function () {
             function miniTick(d) {
                 var bar = d.getElementById('mnBar'), cnt = d.getElementById('mnCnt');
                 if (!bar || !cnt) return;
-                if (!(currentInterval > 0) || !nextRefreshTime) {
+                if (!(currentInterval >0) || !nextRefreshTime) {
                     bar.style.width = '100%'; cnt.textContent = '수동'; return;
                 }
                 var remain = Math.max(0, nextRefreshTime - Date.now());
@@ -7088,7 +7399,7 @@ var EX = (function () {
                 var s = Math.ceil(remain / 1000);
                 cnt.textContent = Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
                 var ib = d.getElementById('mnIv') || d.getElementById('lmIv');
-                if (ib) ib.textContent = '⏱' + _ivLabel();
+                if (ib) ib.textContent = '' + _ivLabel();
             }
             function renderDoc() {
                 if (!docWin || !lastHd) return;
@@ -7099,7 +7410,7 @@ var EX = (function () {
                     var ms = metricsOf(H);
                     var cols = ms.map(function (m) {
                         var pr = ratioPair(m.a, m.t);
-                        var p = (m.a >= 0 && m.t > 0) ? Math.min(1, m.a / m.t) : 0;
+                        var p = (m.a >= 0 && m.t >0) ? Math.min(1, m.a / m.t) : 0;
                         return '<div style="flex:1;min-width:0;">'
                              + '<div style="height:9px;background:' + pr.dark + ';">'
                              + '<div style="height:100%;width:' + (p * 100) + '%;'
@@ -7121,12 +7432,12 @@ var EX = (function () {
                  + '<span id="mnCnt" style="font-weight:800;min-width:42px;'
                  + 'text-align:right;">--:--</span>'
                  + '<button id="mnIv" title="갱신 주기 변경(메인과 동기)" style="border:1px solid #000;'
-                 + 'background:#fff;color:#000;font-weight:800;padding:1px 6px;cursor:pointer;">⏱'
+                 + 'background:#fff;color:#000;font-weight:800;padding:1px 6px;cursor:pointer;">'
                  + _ivLabel() + '</button>'
                  + '<button id="mnRef" title="즉시 갱신" style="border:1px solid #000;background:#fff;'
                  + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">⟳</button>'
                  + '<button id="mnCls" title="닫기" style="border:1px solid #000;background:#fff;'
-                 + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">✕</button></div>'
+                 + 'color:#000;font-weight:800;padding:1px 8px;cursor:pointer;">X</button></div>'
                  + '<div style="text-align:right;font-weight:800;'
                  + 'margin-top:3px;">' + nowTs() + ' 갱신</div>';
                 miniTick(docWin.document);
@@ -7155,7 +7466,7 @@ var EX = (function () {
                     g.fillStyle = MINI_STYLE.color;
                     g.font = '800 ' + Math.round(fsName) + 'px sans-serif';
                     var nm = H.name;
-                    while (nm.length > 2 && g.measureText(nm).width > CW - padX * 2) nm = nm.slice(0, -1);
+                    while (nm.length >2 && g.measureText(nm).width >CW - padX * 2) nm = nm.slice(0, -1);
                     g.fillText(nm, padX, y0 + rowH * 0.04);   // 병원명 = 병상정보 위
                     var barH = Math.max(10, rowH * 0.15);
                     var barY = y0 + rowH * 0.44;
@@ -7163,7 +7474,7 @@ var EX = (function () {
                     ms.forEach(function (m, k) {              // 응급·입원·중환 = 고정 3열
                         var x = padX + colW * k, w = colW - gap;
                         var pr = ratioPair(m.a, m.t);
-                        var p = (m.a >= 0 && m.t > 0) ? Math.min(1, m.a / m.t) : 0;
+                        var p = (m.a >= 0 && m.t >0) ? Math.min(1, m.a / m.t) : 0;
                         g.fillStyle = pr.dark;               // 사용 병상 = 옅은 동일계열
                         g.fillRect(x, barY, w, barH);
                         g.fillStyle = pr.bright;             // 가용 병상 = 밝은색
@@ -7177,9 +7488,9 @@ var EX = (function () {
                         g.fillText(valTxt(m.a, m.t), x + w, labY);
                     });
                 });
-                var remainMs = (currentInterval > 0 && nextRefreshTime)
+                var remainMs = (currentInterval >0 && nextRefreshTime)
                     ? Math.max(0, nextRefreshTime - Date.now()) : 0;
-                var pct = (currentInterval > 0)
+                var pct = (currentInterval >0)
                     ? Math.max(0, Math.min(1, remainMs / currentInterval)) : 1;
                 var by = CH - hFoot + 8;
                 g.fillStyle = 'rgba(255,255,255,0.22)';
@@ -7187,7 +7498,7 @@ var EX = (function () {
                 g.fillStyle = MINI_STYLE.color;
                 g.fillRect(26, by, (CW - 52) * pct, 12);
                 var sL = Math.ceil(remainMs / 1000);
-                var cdt = (currentInterval > 0)
+                var cdt = (currentInterval >0)
                     ? (Math.floor(sL / 60) + ':' + ('0' + (sL % 60)).slice(-2)) : '수동';
                 g.textBaseline = 'top';
                 g.fillStyle = MINI_STYLE.color;
@@ -7259,7 +7570,7 @@ var EX = (function () {
                     await new Promise(function (res) {   // 첫 프레임 크기 확정 후 PiP 진입 (비율 왜곡 방지)
                         var t0 = Date.now();
                         (function chk() {
-                            if (video.videoWidth > 0 || Date.now() - t0 > 800) res();
+                            if (video.videoWidth >0 || Date.now() - t0 >800) res();
                             else setTimeout(chk, 40);
                         })();
                     });
@@ -7273,13 +7584,13 @@ var EX = (function () {
                             });
                             navigator.mediaSession.setActionHandler('pause', function () {
                                 try { video.play(); } catch (e) {}
-                                _miniKick();                        // ⏯ = 즉시 갱신
+                                _miniKick();                        //  = 즉시 갱신
                             });
-                            navigator.mediaSession.setActionHandler('nexttrack', function () { cyclePreset(1); });          // ⏭ = 디자인
-                            navigator.mediaSession.setActionHandler('previoustrack', function () { cycleMainInterval(); }); // ⏮ = 주기
+                            navigator.mediaSession.setActionHandler('nexttrack', function () { cyclePreset(1); });          //  = 디자인
+                            navigator.mediaSession.setActionHandler('previoustrack', function () { cycleMainInterval(); }); //  = 주기
                             if (window.MediaMetadata)
                                 navigator.mediaSession.metadata = new MediaMetadata(
-                                    { title: '병상 미니창', artist: '⏯갱신 · ⏮주기 · ⏭디자인 · 크기=핀치' });
+                                    { title: '병상 미니창', artist: '갱신 · 주기 · 디자인 · 크기=핀치' });
                         }
                     } catch (e) {}
                     video.addEventListener('pause', function () { try { video.play(); } catch (e) {} });
@@ -7352,7 +7663,7 @@ var EX = (function () {
                 }
                 wrap.innerHTML = '<div style="background:#fff;border-radius:14px;max-width:330px;'
                     + 'width:88vw;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,0.3);">'
-                    + '<div style="font-weight:700;margin-bottom:6px;">📺 미니창 스타일</div>'
+                    + '<div style="font-weight:700;margin-bottom:6px;">미니창 스타일</div>'
                     + '<div style="display:flex;gap:5px;margin:2px 0 8px;">'
                     + PRESETS.map(function (p, i) {
                         return '<button data-pi="' + i + '" style="flex:1;padding:6px 2px;'
@@ -7438,17 +7749,17 @@ def _export_lerp(v1, v4, n):
 def _export_sizes(n):
     """비교화면 폰트/여백 프리셋 (compare 라우트와 동일 값)"""
     return {
-        'title_font_size':      f'{_export_lerp(1.95, 1.105, n):.2f}rem',
-        'base_font_size':       f'{_export_lerp(0.90, 0.58, n):.2f}rem',
-        'table_font_size':      f'{_export_lerp(0.92, 0.52, n):.2f}rem',
-        'category_font_size':   f'{_export_lerp(0.88, 0.52, n):.2f}rem',
-        'label_font_size':      f'{_export_lerp(0.88, 0.52, n):.2f}rem',
+        'title_font_size': '1.11rem',
+        'base_font_size': '0.58rem',
+        'table_font_size': f'{_export_lerp(0.92, 0.52, n):.2f}rem',
+        'category_font_size': f'{_export_lerp(0.88, 0.52, n):.2f}rem',
+        'label_font_size': f'{_export_lerp(0.88, 0.52, n):.2f}rem',
         'bed_number_font_size': f'{_export_lerp(0.92, 0.56, n):.2f}em',
-        'pct_font_size_large':  f'{_export_lerp(0.88, 0.58, n):.2f}em',
-        'exception_font_size':  f'{_export_lerp(0.78, 0.48, n):.2f}em',
-        'cell_padding':         '4px 2px',
-        'bed_cell_padding':     '3px 2px',
-        'bar_height':           '5px',
+        'pct_font_size_large': f'{_export_lerp(0.88, 0.58, n):.2f}em',
+        'exception_font_size': f'{_export_lerp(0.78, 0.48, n):.2f}em',
+        'cell_padding': '4px 2px',
+        'bed_cell_padding': '3px 2px',
+        'bar_height': '5px',
     }
 
 
@@ -7544,7 +7855,7 @@ def _build_full_export(auto_entries, iv_ms):
     sel = _export_cut(sel, 'RECON2',  "")
 
     # 저장본 내부의 저장 버튼은 제거
-    sel = sel.replace('\n        <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">💾 저장 (단독 HTML — 선택+조회)</button>', '')
+    sel = sel.replace('\n <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">저장 (단독 HTML — 선택+조회)</button>', '')
     sel = sel.replace("\n        try { document.getElementById('saveAppBtn').onclick = () => { location.href = '/export'; }; } catch(e) {}", '')
 
     # ③ 부모 글루 (엔진 + 비교문서 빌더 + 오버레이 iframe + 제목 릴레이)
@@ -7556,60 +7867,60 @@ def _build_full_export(auto_entries, iv_ms):
         '<script>\n'
         'const EXAPP = (function () {\n'
         "    'use strict';\n"
-        '    const COMPARE_TPL = ' + tpl_json + ';\n'
-        '    const SIZE_SETS = ' + json.dumps(size_sets, ensure_ascii=False) + ';\n'
-        '    const AUTO = ' + json.dumps(auto_entries if auto_entries else None, ensure_ascii=False) + ';\n'
-        '    const AUTO_IV = ' + str(int(iv_ms)) + ';\n'
-        '    const GEN = ' + json.dumps(gen, ensure_ascii=False) + ';\n'
-        '    const BASE_TITLE = document.title;\n'
-        '    let overlay = null;\n'
-        '    function buildDoc(entries, iv) {\n'
-        '        let doc = COMPARE_TPL;\n'
+        ' const COMPARE_TPL = ' + tpl_json + ';\n'
+        ' const SIZE_SETS = ' + json.dumps(size_sets, ensure_ascii=False) + ';\n'
+        ' const AUTO = ' + json.dumps(auto_entries if auto_entries else None, ensure_ascii=False) + ';\n'
+        ' const AUTO_IV = ' + str(int(iv_ms)) + ';\n'
+        ' const GEN = ' + json.dumps(gen, ensure_ascii=False) + ';\n'
+        ' const BASE_TITLE = document.title;\n'
+        ' let overlay = null;\n'
+        ' function buildDoc(entries, iv) {\n'
+        ' let doc = COMPARE_TPL;\n'
         "        const s = SIZE_SETS[String(Math.min(4, Math.max(1, entries.length)))];\n"
         "        Object.keys(s).forEach(k => { doc = doc.split('{{ ' + k + ' }}').join(s[k]); });\n"
-        '        const cfg = { entries: entries, serviceKey: EX.cfg.serviceKey, iv: iv, generated: GEN };\n'
-        '        doc = doc.replace(\'"__EXCFG__"\', JSON.stringify(cfg).replace(/</g, \'\\\\u003c\'));\n'
-        '        return doc;\n'
-        '    }\n'
-        '    function openCompare(hParam) {\n'
-        '        const entries = [];\n'
+        ' const cfg = { entries: entries, serviceKey: EX.cfg.serviceKey, iv: iv, generated: GEN };\n'
+        ' doc = doc.replace(\'"__EXCFG__"\', JSON.stringify(cfg).replace(/</g, \'\\\\u003c\'));\n'
+        ' return doc;\n'
+        ' }\n'
+        ' function openCompare(hParam) {\n'
+        ' const entries = [];\n'
         "        String(hParam || '').split(',').forEach(t => {\n"
         "            const p = t.split('|');\n"
-        '            if (p.length >= 3 && p[0].trim())\n'
-        '                entries.push({ hpid: p[0].trim(), sido: p[1].trim(), gugun: p[2].trim() });\n'
-        '        });\n'
+        ' if (p.length >= 3 && p[0].trim())\n'
+        ' entries.push({ hpid: p[0].trim(), sido: p[1].trim(), gugun: p[2].trim() });\n'
+        ' });\n'
         "        if (!entries.length) { alert('병원 구성이 없습니다.'); return; }\n"
-        '        closeCompare();\n'
+        ' closeCompare();\n'
         "        overlay = document.createElement('div');\n"
         "        overlay.style.cssText = 'position:fixed;inset:0;z-index:99998;background:#f5f7fa;';\n"
         "        const back = document.createElement('button');\n"
         "        back.textContent = '↩ 병원선택';\n"
         "        back.style.cssText = 'position:fixed;top:6px;left:6px;z-index:99999;padding:6px 12px;border:none;border-radius:14px;background:rgba(30,30,30,0.75);color:#fff;font-size:0.8rem;cursor:pointer;';\n"
-        '        back.onclick = closeCompare;\n'
+        ' back.onclick = closeCompare;\n'
         "        const fr = document.createElement('iframe');\n"
         "        fr.style.cssText = 'width:100%;height:100%;border:none;display:block;';\n"
         "        fr.setAttribute('allow', 'picture-in-picture');\n"
-        '        fr.srcdoc = buildDoc(entries, AUTO_IV);\n'
-        '        overlay.appendChild(fr);\n'
-        '        overlay.appendChild(back);\n'
-        '        document.body.appendChild(overlay);\n'
-        '    }\n'
-        '    function closeCompare() {\n'
-        '        if (overlay) { overlay.remove(); overlay = null; }\n'
-        '        try { document.title = BASE_TITLE; } catch (e) {}\n'
-        '    }\n'
+        ' fr.srcdoc = buildDoc(entries, AUTO_IV);\n'
+        ' overlay.appendChild(fr);\n'
+        ' overlay.appendChild(back);\n'
+        ' document.body.appendChild(overlay);\n'
+        ' }\n'
+        ' function closeCompare() {\n'
+        ' if (overlay) { overlay.remove(); overlay = null; }\n'
+        ' try { document.title = BASE_TITLE; } catch (e) {}\n'
+        ' }\n'
         "    window.addEventListener('message', function (e) {\n"
-        '        if (e && e.data && e.data.exTitle) { try { document.title = e.data.exTitle; } catch (err) {} }\n'
-        '    });\n'
-        '    if (AUTO && AUTO.length) setTimeout(function () {\n'
-        "        openCompare(AUTO.map(e => e.hpid + '|' + e.sido + '|' + e.gugun).join(','));\n"
-        '    }, 50);\n'
-        '    return { getHospitals: function (s, g) { return EX.fetchRegionHospitals(s, g); },\n'
-        '             getAllHospitals: function (f) { return EX.fetchAllHospitals(f); },\n'
-        '             getBedSaturation: function (f) { return EX.fetchBedSaturation(f); },\n'
-        '             getBeds: function (s) { return EX.fetchBeds(s); },\n'
-        '             getDetail: function (h, s, g) { return EX.fetchDetail(h, s, g); },\n'
-        '             openCompare: openCompare, closeCompare: closeCompare, buildDoc: buildDoc };\n'
+        ' if (e && e.data && e.data.exTitle) { try { document.title = e.data.exTitle; } catch (err) {} }\n'
+        ' });\n'
+        ' if (AUTO && AUTO.length) setTimeout(function () {\n'
+        "        openCompare(AUTO.map(e =>e.hpid + '|' + e.sido + '|' + e.gugun).join(','));\n"
+        ' }, 50);\n'
+        ' return { getHospitals: function (s, g) { return EX.fetchRegionHospitals(s, g); },\n'
+        ' getAllHospitals: function (f) { return EX.fetchAllHospitals(f); },\n'
+        ' getBedSaturation: function (f) { return EX.fetchBedSaturation(f); },\n'
+        ' getBeds: function (s) { return EX.fetchBeds(s); },\n'
+        ' getDetail: function (h, s, g) { return EX.fetchDetail(h, s, g); },\n'
+        ' openCompare: openCompare, closeCompare: closeCompare, buildDoc: buildDoc };\n'
         '})();\n'
         '</script>\n</body>'
     )
@@ -7661,50 +7972,52 @@ _PIP_HTML = (
     '<title>응급실 모니터</title>'
     '<style>'
     '*{margin:0;padding:0;box-sizing:border-box;}'
+    'html{font-size:16px;}'
     'body{background:#1a1a2e;color:#e0e0e0;'
-    '     font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;'
-    '     font-size:13px;padding:6px;}'
+    ' font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;'
+    ' font-size:13px;padding:6px;}'
     '.hdr{background:linear-gradient(135deg,#5b21b6,#4c1d95);padding:7px 10px;'
-    '     border-radius:6px;margin-bottom:4px;display:flex;'
-    '     justify-content:space-between;align-items:center;}'
+    ' border-radius:0;margin-bottom:4px;display:flex;'
+    ' justify-content:space-between;align-items:center;}'
     '.hdr-title{font-weight:700;font-size:14px;}'
     '.hdr-time{font-size:11px;color:#a78bfa;}'
     '.ovbtns{display:none;gap:3px;margin-left:6px;}'
     '.ovbtns.on{display:flex;}'
     '.ovb{background:rgba(255,255,255,0.16);color:#fff;border:none;'
-    '     border-radius:4px;min-width:22px;height:22px;font-size:12px;'
-    '     line-height:1;cursor:pointer;padding:0 4px;}'
+    ' border-radius:0;min-width:22px;height:22px;font-size:12px;'
+    ' line-height:1;cursor:pointer;padding:0 4px;}'
     '.ovb:active{background:rgba(255,255,255,0.35);}'
     '.ovx{background:#dc2626;}'
-    '.cbar-wrap{height:5px;background:#1e3a1e;border-radius:3px;margin-bottom:5px;overflow:hidden;}'
-    '.cbar-fill{height:100%;background:#2d6a2d;border-radius:3px;transition:width 1s linear;}'
+    '.cbar-wrap{height:5px;background:#1e3a1e;border-radius:0;margin-bottom:5px;overflow:hidden;}'
+    '.cbar-fill{height:100%;background:#2d6a2d;border-radius:0;transition:width 1s linear;}'
     'table{width:100%;border-collapse:collapse;table-layout:fixed;}'
     'th{background:#0f3460;color:#a78bfa;padding:5px 1px;font-size:11px;'
-    '   font-weight:600;text-align:left;position:sticky;top:0;}'
+    ' font-weight:600;text-align:left;position:sticky;top:0;}'
     'th.nc{text-align:left;padding-left:4px;width:34%;}'
     'th.vc{width:22%;}'
     'td{padding:3px 1px;border-bottom:1px solid #16213e;vertical-align:middle;}'
-    'td.n{font-size:11px;padding-left:4px;word-break:keep-all;}'
+    'td.n{font-size:11px;padding-left:4px;white-space:nowrap;'
+    ' overflow:hidden;text-overflow:ellipsis;}'
     'td.v{text-align:left;padding-left:3px;width:22%;}'
     'td.ok .vn{color:#4CAF50;}td.wn .vn{color:#FFA726;}td.bd .vn{color:#E53935;}'
     'td.no .vn{color:#555;}'
     '.vn{font-weight:700;font-size:12px;display:block;white-space:nowrap;}'
-    '.vb{height:5px;border-radius:2px;overflow:hidden;margin-top:2px;display:flex;width:100%;}'
+    '.vb{height:5px;border-radius:0;overflow:hidden;margin-top:2px;display:flex;width:100%;}'
     '.bfa{height:100%;}'
     '.bfu{height:100%;opacity:0.25;}'
     '.ctrl{display:flex;gap:5px;margin-bottom:5px;flex-wrap:wrap;align-items:center;}'
     '.ctrl label{font-size:11px;color:#a78bfa;}'
     '.ctrl select{background:#16213e;color:#e0e0e0;border:1px solid #5b21b6;'
-    '             border-radius:4px;padding:2px 4px;font-size:11px;}'
-    '.ctrl button{background:#5b21b6;color:white;border:none;border-radius:4px;'
-    '             padding:3px 8px;font-size:11px;cursor:pointer;}'
+    ' border-radius:0;padding:2px 4px;font-size:11px;}'
+    '.ctrl button{background:#5b21b6;color:white;border:none;border-radius:0;'
+    ' padding:3px 8px;font-size:11px;cursor:pointer;}'
     '.ctrl button:hover{background:#6d28d9;}'
     '.st{font-size:10px;color:#a78bfa;margin-left:auto;}'
     '</style>'
     '</head>'
     '<body>'
     '<div class="hdr">'
-    '<span class="hdr-title">&#9197; 응급실 모니터</span>'
+    '<span class="hdr-title">응급실 모니터</span>'
     '<span class="hdr-time" id="ut">로드 중...</span>'
     '<span class="ovbtns" id="ovb">'
     '<button class="ovb" id="bSm" title="작게">&#8722;</button>'
@@ -7732,101 +8045,116 @@ _PIP_HTML = (
     'var HP=decodeURIComponent(new URLSearchParams(location.search).get("h")||"");'
     'var IVI=parseInt(new URLSearchParams(location.search).get("iv")||"180000");'
     '(function(){'
-    '  var s=Math.round(IVI/1000),sel=document.getElementById("iv");'
-    '  var best=null,bd=Infinity;'
-    '  for(var i=0;i<sel.options.length;i++){'
-    '    var d=Math.abs(parseInt(sel.options[i].value)-s);'
-    '    if(d<bd){bd=d;best=i;}'
-    '  }'
-    '  if(best!==null)sel.selectedIndex=best;'
+    ' var s=Math.round(IVI/1000),sel=document.getElementById("iv");'
+    ' var best=null,bd=Infinity;'
+    ' for(var i=0;i<sel.options.length;i++){'
+    ' var d=Math.abs(parseInt(sel.options[i].value)-s);'
+    ' if(d<bd){bd=d;best=i;}'
+    ' }'
+    ' if(best!==null)sel.selectedIndex=best;'
     '})();'
     'var _t=null,_ct=null,_na=0,_iv=0;'
     'function nz(v,d){return (v===undefined||v===null||isNaN(v))?((d===undefined)?-1:d):v;}'
     'function gcA(r){'
-    '  var g=nz(r.hvgc),e=nz(r.hv36);'
-    '  if(g>=0&&e>=0)return g+e; if(g>=0)return g; if(e>=0)return e; return -1;'
+    ' var g=nz(r.hvgc),e=nz(r.hv36);'
+    ' if(g>=0&&e>=0)return g+e; if(g>=0)return g; if(e>=0)return e; return -1;'
     '}'
     'function gcT(r){'
-    '  var g=nz(r.hvgc),e=nz(r.hv36),gt=nz(r.hvgc_t,0),et=nz(r.hv36_t,0);'
-    '  if(g>=0&&e>=0)return (gt>0?gt:0)+(et>0?et:0);'
-    '  if(g>=0)return gt; if(e>=0)return et; return 0;'
+    ' var g=nz(r.hvgc),e=nz(r.hv36),gt=nz(r.hvgc_t,0),et=nz(r.hv36_t,0);'
+    ' if(g>=0&&e>=0)return (gt>0?gt:0)+(et>0?et:0);'
+    ' if(g>=0)return gt; if(e>=0)return et; return 0;'
     '}'
     'function vc(a,t){if(a<0)return "bd";if(t<=0)return a>0?"ok":a===0?"bd":"no";'
-    '  var p=a/t;return p>=0.5?"ok":p>=0.2?"wn":"bd";}'
+    ' var p=a/t;return p>=0.5?"ok":p>=0.2?"wn":"bd";}'
     'function cell(a,t){'
-    '  if(a===-1&&t<=0)return "<td class=\'v no\'><span class=vn>-</span><div class=vb></div></td>";'
-    '  var l=t>0?a+"/"+t:String(a);'
-    '  var st=vc(a,t);'
-    '  var bc=st==="ok"?"#4CAF50":st==="wn"?"#FFA726":"#E53935";'
-    '  var wA=t>0?Math.min(100,Math.round(a/t*100)):(a>0?100:0);'
-    '  var wU=100-wA;'
-    '  return "<td class=\'v "+st+"\'><span class=vn>"+l+"</span>"'
-    '       +"<div class=vb><div class=bfa style=\'width:"+wA+"%;background:"+bc+"\'></div>"'
-    '       +"<div class=bfu style=\'width:"+wU+"%;background:"+bc+"\'></div></div></td>";'
+    ' if(a===-1&&t<=0)return "<td class=\'v no\'><span class=vn>-</span><div class=vb></div></td>";'
+    ' var l=t>0?a+"/"+t:String(a);'
+    ' var st=vc(a,t);'
+    ' var bc=st==="ok"?"#4CAF50":st==="wn"?"#FFA726":"#E53935";'
+    ' var wA=t>0?Math.min(100,Math.round(a/t*100)):(a>0?100:0);'
+    ' var wU=100-wA;'
+    ' return "<td class=\'v "+st+"\'><span class=vn>"+l+"</span>"'
+    ' +"<div class=vb><div class=bfa style=\'width:"+wA+"%;background:"+bc+"\'></div>"'
+    ' +"<div class=bfu style=\'width:"+wU+"%;background:"+bc+"\'></div></div></td>";'
     '}'
     'function go(){'
-    '  if(!HP){'
-    '    document.getElementById("tw").innerHTML="<p style=\'color:#f55;padding:8px\'>h 파라미터 없음</p>";'
-    '    return;'
-    '  }'
-    '  fetch("/pip_data?h="+encodeURIComponent(HP)+"&_t="+Date.now(),{cache:"no-cache"})'
-    '    .then(function(r){return r.json();})'
-    '    .then(function(d){'
-    '      document.getElementById("ut").textContent=d.fetched_at||"";'
-    '      var rs=d.hospitals||[];'
-    '      if(!rs.length){'
-    '        document.getElementById("tw").innerHTML="<p style=\'color:#aaa;padding:8px\'>데이터 없음</p>";'
-    '        return;'
-    '      }'
-    '      var h="<table><thead><tr>"'
-    '           +"<th class=nc>병원</th>"'
-    '           +"<th class=vc>응급실</th>"'
-    '           +"<th class=vc>중환자</th>"'
-    '           +"<th class=vc>입원</th>"'
-    '           +"</tr></thead><tbody>";'
-    '      rs.forEach(function(r){'
-    '        h+="<tr><td class=n>"+r.name+"</td>"'
-    '          +cell(nz(r.hvec),nz(r.hvec_t,0))'
-    '          +cell(nz(r.hicu),nz(r.hicu_t,0))'
-    '          +cell(gcA(r),gcT(r))+"</tr>";'
-    '      });'
-    '      document.getElementById("tw").innerHTML=h+"</tbody></table>";'
-    '    })'
-    '    .catch(function(e){'
-    '      document.getElementById("tw").innerHTML="<p style=\'color:#f55;padding:8px\'>오류: "+e.message+"</p>";'
-    '    });'
+    ' if(!HP){'
+    ' document.getElementById("tw").innerHTML="<p style=\'color:#f55;padding:8px\'>h 파라미터 없음</p>";'
+    ' return;'
+    ' }'
+    ' fetch("/pip_data?h="+encodeURIComponent(HP)+"&_t="+Date.now(),{cache:"no-cache"})'
+    ' .then(function(r){return r.json();})'
+    ' .then(function(d){'
+    ' document.getElementById("ut").textContent=d.fetched_at||"";'
+    ' var rs=d.hospitals||[];'
+    ' if(!rs.length){'
+    ' document.getElementById("tw").innerHTML="<p style=\'color:#aaa;padding:8px\'>데이터 없음</p>";'
+    ' return;'
+    ' }'
+    ' var h="<table><thead><tr>"'
+    ' +"<th class=nc>병원</th>"'
+    ' +"<th class=vc>응급실</th>"'
+    ' +"<th class=vc>중환자</th>"'
+    ' +"<th class=vc>입원</th>"'
+    ' +"</tr></thead><tbody>";'
+    ' rs.forEach(function(r){'
+    ' h+="<tr><td class=n>"+r.name+"</td>"'
+    ' +cell(nz(r.hvec),nz(r.hvec_t,0))'
+    ' +cell(nz(r.hicu),nz(r.hicu_t,0))'
+    ' +cell(gcA(r),gcT(r))+"</tr>";'
+    ' });'
+    ' document.getElementById("tw").innerHTML=h+"</tbody></table>";'
+    ' })'
+    ' .catch(function(e){'
+    ' document.getElementById("tw").innerHTML="<p style=\'color:#f55;padding:8px\'>오류: "+e.message+"</p>";'
+    ' });'
     '}'
     'function updateBar(){'
-    '  if(_iv<=0)return;'
-    '  var rem=Math.max(0,_na-Date.now());'
-    '  var pct=Math.min(100,Math.round((_iv-Math.max(0,_na-Date.now()))/_iv*100));'
-    '  document.getElementById("cbf").style.width=pct+"%";'
-    '  var s=Math.round(rem/1000);'
-    '  document.getElementById("ct").textContent='
-    '    "다음 "+Math.floor(s/60)+":"+(("0"+s%60).slice(-2));'
+    ' if(_iv<=0)return;'
+    ' var rem=Math.max(0,_na-Date.now());'
+    ' var pct=Math.min(100,Math.round((_iv-Math.max(0,_na-Date.now()))/_iv*100));'
+    ' document.getElementById("cbf").style.width=pct+"%";'
+    ' var s=Math.round(rem/1000);'
+    ' document.getElementById("ct").textContent='
+    ' "다음 "+Math.floor(s/60)+":"+(("0"+s%60).slice(-2));'
     '}'
     'function st(){'
-    '  clearInterval(_t);clearInterval(_ct);'
-    '  _iv=parseInt(document.getElementById("iv").value)*1000;'
-    '  document.getElementById("ct").textContent="";'
-    '  document.getElementById("cbf").style.width="0%";'
-    '  if(_iv<=0)return;'
-    '  _na=Date.now()+_iv;'
-    '  _ct=setInterval(updateBar,1000);'
-    '  _t=setInterval(function(){go();_na=Date.now()+_iv;},_iv);'
+    ' clearInterval(_t);clearInterval(_ct);'
+    ' _iv=parseInt(document.getElementById("iv").value)*1000;'
+    ' document.getElementById("ct").textContent="";'
+    ' document.getElementById("cbf").style.width="0%";'
+    ' if(_iv<=0)return;'
+    ' _na=Date.now()+_iv;'
+    ' _ct=setInterval(updateBar,1000);'
+    ' _t=setInterval(function(){go();_na=Date.now()+_iv;},_iv);'
     '}'
+    'function fit(){'
+    ' var w=document.documentElement.clientWidth||320;'
+    ' var s=Math.max(10,Math.min(28,w/22));'
+    ' document.documentElement.style.fontSize=s+"px";'
+    ' var k=s/16;'
+    ' var css=document.getElementById("fitcss");'
+    ' if(!css){css=document.createElement("style");css.id="fitcss";'
+    ' document.head.appendChild(css);}'
+    ' css.textContent="body{font-size:"+(13*k)+"px;}"'
+    ' +"th{font-size:"+(11*k)+"px;}td.n{font-size:"+(11*k)+"px;}"'
+    ' +".vn{font-size:"+(12*k)+"px;}.hdr-title{font-size:"+(14*k)+"px;}"'
+    ' +".hdr-time{font-size:"+(11*k)+"px;}.ovb{font-size:"+(12*k)+"px;"'
+    ' +"min-width:"+(22*k)+"px;height:"+(22*k)+"px;}";'
+    '}'
+    'fit();window.addEventListener("resize",fit);'
     'var OV=(new URLSearchParams(location.search).get("ov")==="1");'
     'if(OV){'
-    '  document.getElementById("ovb").className="ovbtns on";'
-    '  var ova=function(q){'
-    '    fetch("/api/overlay?"+q+"&_t="+Date.now(),{cache:"no-store"})'
-    '      .catch(function(){});'
-    '  };'
-    '  document.getElementById("bSm").onclick=function(){ova("action=scale&v=-1");};'
-    '  document.getElementById("bLg").onclick=function(){ova("action=scale&v=1");};'
-    '  document.getElementById("bUp").onclick=function(){ova("action=move&v=-24");};'
-    '  document.getElementById("bDn").onclick=function(){ova("action=move&v=24");};'
-    '  document.getElementById("bCl").onclick=function(){ova("action=close");};'
+    ' document.getElementById("ovb").className="ovbtns on";'
+    ' var ova=function(q){'
+    ' fetch("/api/overlay?"+q+"&_t="+Date.now(),{cache:"no-store"})'
+    ' .catch(function(){});'
+    ' };'
+    ' document.getElementById("bSm").onclick=function(){ova("action=scale&v=-1");};'
+    ' document.getElementById("bLg").onclick=function(){ova("action=scale&v=1");};'
+    ' document.getElementById("bUp").onclick=function(){ova("action=move&v=-24");};'
+    ' document.getElementById("bDn").onclick=function(){ova("action=move&v=24");};'
+    ' document.getElementById("bCl").onclick=function(){ova("action=close");};'
     '}'
     'document.getElementById("iv").addEventListener("change",function(){st();go();});'
     'document.getElementById("nb").addEventListener("click",go);'
@@ -7918,15 +8246,15 @@ def pip_data():
                         _dlog(f'[pip_data] {_hpid} 캐시 재사용 (age={_age:.0f}s) '
                               f'hvgc={_ce["hvgc"]} hv36={_ce["hv36"]}')
                         result_map[_hpid] = {
-                            # ★ FIX: entries는 hpid|sido|gugun 만 가짐 → e2['name'] → KeyError.
+                            #  FIX: entries는 hpid|sido|gugun 만 가짐 → e2['name'] → KeyError.
                             # KeyError는 next()의 default를 우회하고 외부 except로 전달되어
                             # hospitals=[] 를 반환하는 silent 오류를 일으킨다.
                             # 캐시 엔트리에 저장된 name을 우선 사용, 없으면 hpid로 대체.
-                            'name':   _ce.get('name', _hpid),
-                            'hvec':   _ce['hvec'],   'hvec_t': _ce['hvec_t'],
-                            'hvgc':   _ce['hvgc'],   'hvgc_t': _ce['hvgc_t'],
-                            'hv36':   _ce['hv36'],   'hv36_t': _ce['hv36_t'],
-                            'hicu':   _ce['hicu'],   'hicu_t': _ce['hicu_t'],
+                            'name': _ce.get('name', _hpid),
+                            'hvec': _ce['hvec'], 'hvec_t': _ce['hvec_t'],
+                            'hvgc': _ce['hvgc'], 'hvgc_t': _ce['hvgc_t'],
+                            'hv36': _ce['hv36'], 'hv36_t': _ce['hv36_t'],
+                            'hicu': _ce['hicu'], 'hicu_t': _ce['hicu_t'],
                         }
                         _cached_hpids.add(_hpid)
 
@@ -7977,42 +8305,42 @@ def pip_data():
                         _prev = _pip_bed_total_cache.get(hpid, {})
 
                         _hvec_t_raw = get_hvs(item, 'HVS01')
-                        if _hvec_t_raw > 0:
+                        if _hvec_t_raw >0:
                             _prev['hvec_t'] = _hvec_t_raw
                             _hvec_t = _hvec_t_raw
                         else:
                             _hvec_t = _prev.get('hvec_t', 0)
                         _dlog(f'[pip_data][HVS] {hpid} HVS01(응급합계): '
                               f'raw={_hvec_t_raw} → 사용={_hvec_t} '
-                              f'({"신규" if _hvec_t_raw > 0 else "캐시폴백" if _hvec_t > 0 else "캐시없음"})')
+                              f'({"신규" if _hvec_t_raw >0 else "캐시폴백" if _hvec_t >0 else "캐시없음"})')
 
                         _hvgc_t_raw = get_hvs(item, 'HVS38')
-                        if _hvgc_t_raw > 0:
+                        if _hvgc_t_raw >0:
                             _prev['hvgc_t'] = _hvgc_t_raw
                             _hvgc_t = _hvgc_t_raw
                         else:
                             _hvgc_t = _prev.get('hvgc_t', 0)
                         _dlog(f'[pip_data][HVS] {hpid} HVS38(일반입원합계): '
                               f'raw={_hvgc_t_raw} → 사용={_hvgc_t} '
-                              f'({"신규" if _hvgc_t_raw > 0 else "캐시폴백" if _hvgc_t > 0 else "캐시없음"})')
+                              f'({"신규" if _hvgc_t_raw >0 else "캐시폴백" if _hvgc_t >0 else "캐시없음"})')
 
                         _hv36_t_raw = get_hvs(item, 'HVS19')
-                        if _hv36_t_raw > 0:
+                        if _hv36_t_raw >0:
                             _prev['hv36_t'] = _hv36_t_raw
                             _hv36_t = _hv36_t_raw
                         else:
                             _hv36_t = _prev.get('hv36_t', 0)
                         _dlog(f'[pip_data][HVS] {hpid} HVS19(응급전용입원합계): '
                               f'raw={_hv36_t_raw} → 사용={_hv36_t} '
-                              f'({"신규" if _hv36_t_raw > 0 else "캐시폴백" if _hv36_t > 0 else "캐시없음"})')
+                              f'({"신규" if _hv36_t_raw >0 else "캐시폴백" if _hv36_t >0 else "캐시없음"})')
 
-                        if _icu_total > 0:
+                        if _icu_total >0:
                             _prev['hicu_t'] = _icu_total
                         else:
                             _icu_total = _prev.get('hicu_t', 0)
                         _dlog(f'[pip_data][ICU] {hpid} '
                               f'avail={_icu_avail} total={_icu_total} any={_icu_any} '
-                              f'({"신규" if _icu_total > 0 else "캐시폴백" if _prev.get("hicu_t", 0) > 0 else "캐시없음"})')
+                              f'({"신규" if _icu_total >0 else "캐시폴백" if _prev.get("hicu_t", 0) >0 else "캐시없음"})')
 
                         _pip_bed_total_cache[hpid] = _prev
 
@@ -8022,8 +8350,8 @@ def pip_data():
                               f'hv36={_raw_hv36}(t={_hv36_t}) '
                               f'hvec={safe_int(item.findtext("hvec"))}(t={_hvec_t})')
                         local_results[hpid] = {
-                            'name':   (item.findtext('dutyName') or '').strip(),
-                            'hvec':   safe_int(item.findtext('hvec')),
+                            'name': (item.findtext('dutyName') or '').strip(),
+                            'hvec': safe_int(item.findtext('hvec')),
                             'hvec_t': _hvec_t,
                             # hvgc: 일반 입원실 가용, hv36: 응급전용 입원실 가용
                             # PiP 입원 표시는 두 값 합산 (비교화면의 일반+응급전용 합계와 일치)
@@ -8034,14 +8362,14 @@ def pip_data():
                             'hicu':   _icu_avail if _icu_any else -1,
                             'hicu_t': _icu_total,
                         }
-                        # ★ FIX(2025): pip_data API 결과를 _compare_bed_cache에 역기록
+                        #  FIX(2025): pip_data API 결과를 _compare_bed_cache에 역기록
                         # /compare 방문 없이도 다음 pip_data 호출에서 캐시 히트 가능.
                         # name도 함께 저장해 캐시 읽기 경로의 KeyError를 방지한다.
                         _now_str = datetime.now().strftime('%H:%M:%S')
                         with _compare_bed_cache_lock:
                             _compare_bed_cache[hpid] = {
-                                'name':   (item.findtext('dutyName') or '').strip(),
-                                'hvec':   safe_int(item.findtext('hvec')),
+                                'name': (item.findtext('dutyName') or '').strip(),
+                                'hvec': safe_int(item.findtext('hvec')),
                                 'hvec_t': _hvec_t,
                                 'hvgc':   _raw_hvgc,
                                 'hvgc_t': _hvgc_t,
@@ -8073,11 +8401,11 @@ def pip_data():
         })
 
     except Exception as _ex:
-        # ★ FIX(2025): 전체 예외를 HTTP 500 대신 200+빈 결과로 반환.
+        #  FIX(2025): 전체 예외를 HTTP 500 대신 200+빈 결과로 반환.
         # _dlog 로 Kivy 디버그 패널에도 표시 → 원인 추적 가능.
         _tb = traceback.format_exc()
         _log(f'[pip_data] 전체 예외: {_ex}\n{_tb}', 'ERROR')
-        _dlog(f'[pip_data] ★예외★ {_ex}')   # 디버그 패널에 즉시 표시
+        _dlog(f'[pip_data] 예외 {_ex}')   # 디버그 패널에 즉시 표시
         return jsonify({
             'hospitals':  [],
             'fetched_at': datetime.now().strftime('%H:%M:%S'),
@@ -8088,7 +8416,7 @@ def pip_data():
 
 @flask_app.route('/api/enter_pip', methods=['POST'])
 def api_enter_pip():
-    """브라우저 📺 버튼 → Flask → Kivy PiP 요청."""
+    """브라우저  버튼 → Flask → Kivy PiP 요청."""
     data = request.get_json(silent=True) or {}
     _pip_state['h_param'] = data.get('h', '')
     try:
@@ -8170,9 +8498,8 @@ def debug_log():
 
     diag_html = '''
 <div style="background:#2d2d2d;padding:12px;margin-bottom:10px;border-radius:6px;border-left:4px solid #9cdcfe;">
-<h3 style="color:#9cdcfe;margin:0 0 8px 0;font-size:0.9rem;">🔗 Compare 라우트 테스트</h3>
-<p style="color:#aaa;font-size:0.8rem;margin-bottom:8px;">
-아래 URL로 compare 페이지를 직접 테스트할 수 있습니다 (GET 방식):<br>
+<h3 style="color:#9cdcfe;margin:0 0 8px 0;font-size:0.9rem;">Compare 라우트 테스트</h3>
+<p style="color:#aaa;font-size:0.8rem;margin-bottom:8px;">아래 URL로 compare 페이지를 직접 테스트할 수 있습니다 (GET 방식):<br>
 <code style="color:#4ec9b0;">/compare?h=HPID1|시도|시군구,HPID2|시도|시군구</code>
 </p>
 </div>'''
@@ -8181,8 +8508,7 @@ def debug_log():
 <!DOCTYPE html><html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>디버그 로그</title>
-<style>
-body{font-family:monospace;background:#1e1e1e;color:#d4d4d4;margin:0;padding:0;}
+<style>body{font-family:monospace;background:#1e1e1e;color:#d4d4d4;margin:0;padding:0;}
 .header{background:#333;padding:12px 16px;position:sticky;top:0;display:flex;
         justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;}
 .header h2{margin:0;color:#9cdcfe;font-size:1rem;}
@@ -8194,19 +8520,18 @@ pre{padding:16px;margin:0;white-space:pre-wrap;word-break:break-all;
 .err{color:#f48771;} .warn{color:#dcdcaa;} .info{color:#9cdcfe;}
 </style></head><body>
 <div class="header">
-  <h2>🔍 디버그 로그 — {{ log_file }}</h2>
+  <h2>디버그 로그 — {{ log_file }}</h2>
   <div style="display:flex;gap:8px;">
-    <a class="btn" href="/debug">🔄 새로고침</a>
-    <a class="btn" href="/">🏠 홈</a>
+    <a class="btn" href="/debug">새로고침</a>
+    <a class="btn" href="/">홈</a>
   </div>
 </div>
 <div style="padding:12px;">{{ diag|safe }}</div>
 <pre id="log">{{ content }}</pre>
-<script>
-const pre = document.getElementById('log');
+<script>const pre = document.getElementById('log');
 pre.innerHTML = pre.textContent
   .split('\\n')
-  .map(l => l.includes('[ERROR]') || l.includes('ERROR') ? `<span class="err">${l}</span>`
+  .map(l =>l.includes('[ERROR]') || l.includes('ERROR') ? `<span class="err">${l}</span>`
            : l.includes('[WARNING]') || l.includes('WARN') ? `<span class="warn">${l}</span>`
            : l.includes('[INFO]') || l.includes('[compare]') ? `<span class="info">${l}</span>` : l)
   .join('\\n');
@@ -8247,11 +8572,11 @@ def debug_msgs(hpid):
                 # 원시 필드 전체 수집
                 all_tags = {child.tag: (child.text or '') for child in item}
 
-                sym_blk_msg     = all_tags.get('symBlkMsg',     '').strip()
-                sym_typ_cod_mag = all_tags.get('symTypCodMag',  '').strip()
-                sym_typ_cod     = all_tags.get('symTypCod',     '').strip()
-                sym_out_dsp_yon = all_tags.get('symOutDspYon',  '').strip()
-                sym_blk_msg_typ = all_tags.get('symBlkMsgTyp',  '').strip()
+                sym_blk_msg     = all_tags.get('symBlkMsg', '').strip()
+                sym_typ_cod_mag = all_tags.get('symTypCodMag', '').strip()
+                sym_typ_cod     = all_tags.get('symTypCod', '').strip()
+                sym_out_dsp_yon = all_tags.get('symOutDspYon', '').strip()
+                sym_blk_msg_typ = all_tags.get('symBlkMsgTyp', '').strip()
 
                 # 처리 결과 시뮬레이션
                 label_raw   = _resolve_type_label(sym_typ_cod_mag, sym_typ_cod)
@@ -8261,10 +8586,10 @@ def debug_msgs(hpid):
                 cat         = _categorize_exception(label_final, clean_msg) if not skipped else '(건너뜀)'
                 if skipped:
                     row_bg = 'background:#3d1f1f'
-                    status = '⛔ SKIP'
+                    status = ' SKIP'
                 else:
                     row_bg = 'background:#1e2a1e'
-                    status = '✅ OK'
+                    status = ' OK'
 
                 # 나머지 태그들
                 extra_tags = {k:v for k,v in all_tags.items()
@@ -8299,8 +8624,7 @@ def debug_msgs(hpid):
     return f'''<!DOCTYPE html><html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MSG 디버그 – {_html.escape(hpid)}</title>
-<style>
-body{{font-family:monospace;background:#1e1e1e;color:#d4d4d4;margin:0;padding:0;}}
+<style>body{{font-family:monospace;background:#1e1e1e;color:#d4d4d4;margin:0;padding:0;}}
 .hdr{{background:#252526;padding:10px 14px;position:sticky;top:0;border-bottom:1px solid #444;display:flex;gap:10px;align-items:center;flex-wrap:wrap;}}
 h2{{margin:0;color:#9cdcfe;font-size:1rem;}}
 a.btn{{padding:5px 12px;background:#0e639c;color:white;border:none;border-radius:4px;
@@ -8311,10 +8635,10 @@ table{{border-collapse:collapse;min-width:100%;font-size:0.78rem;}}
 th,td{{border:1px solid #3c3c3c;padding:5px 7px;vertical-align:top;word-break:break-all;}}
 </style></head><body>
 <div class="hdr">
-  <h2>🔬 메시지 API 원본 덤프 — HPID: {_html.escape(hpid)} ({total_items}건)</h2>
-  <a class="btn" href="/debug/msgs/{_html.escape(hpid)}">🔄 갱신</a>
-  <a class="btn" href="/debug">📋 일반로그</a>
-  <a class="btn" href="/">🏠 홈</a>
+  <h2>메시지 API 원본 덤프 — HPID: {_html.escape(hpid)} ({total_items}건)</h2>
+  <a class="btn" href="/debug/msgs/{_html.escape(hpid)}">갱신</a>
+  <a class="btn" href="/debug">일반로그</a>
+  <a class="btn" href="/">홈</a>
 </div>
 {raw_section}
 <div class="wrap"><table>{table}</table></div>
@@ -8334,7 +8658,7 @@ def debug_tool():
 <html lang="ko"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🔬 API 디버그 도구</title>
+<title>API 디버그 도구</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Malgun Gothic',monospace;background:#1e1e1e;color:#d4d4d4;padding:16px;}
@@ -8366,7 +8690,7 @@ textarea{width:100%;height:480px;background:#111;color:#d4d4d4;border:1px solid 
 a{color:#9cdcfe;}
 </style></head><body>
 
-<h2>🔬 API 디버그 도구 — 병원 검색 + 메시지 원본 추출</h2>
+<h2>API 디버그 도구 — 병원 검색 + 메시지 원본 추출</h2>
 
 <div style="background:#252526;padding:14px;border-radius:8px;margin-bottom:16px;">
   <h3>① 병원 HPID 검색</h3>
@@ -8384,7 +8708,7 @@ a{color:#9cdcfe;}
       <input id="hname" placeholder="예: 분당제생" value="분당제생">
     </div>
   </div>
-  <button class="btn" onclick="searchHospital()">🔍 병원 검색</button>
+  <button class="btn" onclick="searchHospital()">병원 검색</button>
   <div id="result"></div>
 </div>
 
@@ -8392,27 +8716,26 @@ a{color:#9cdcfe;}
   <h3>② HPID로 메시지 API 원본 직접 조회</h3>
   <div class="row">
     <input id="direct_hpid" placeholder="HPID 직접 입력 (예: C1300020)" style="flex:1;">
-    <button class="btn btn-green" onclick="fetchMsgs()">📡 API 원본 가져오기</button>
-    <button class="btn btn-copy" onclick="copyAll()">📋 전체 복사</button>
+    <button class="btn btn-green" onclick="fetchMsgs()">API 원본 가져오기</button>
+    <button class="btn btn-copy" onclick="copyAll()">전체 복사</button>
   </div>
   <div id="fetchStatus"></div>
   <textarea id="output" placeholder="여기에 원본 데이터가 출력됩니다..."></textarea>
 </div>
 
-<script>
-async function searchHospital() {
+<script>async function searchHospital() {
   const sido  = document.getElementById('sido').value.trim();
   const gugun = document.getElementById('gugun').value.trim();
   const name  = document.getElementById('hname').value.trim().toLowerCase();
   const res   = document.getElementById('result');
   if (!sido) { res.innerHTML='<div class="status err">시/도를 입력하세요</div>'; return; }
-  res.innerHTML = '<div class="status loading">🔄 검색 중...</div>';
+  res.innerHTML = '<div class="status loading">검색 중...</div>';
   try {
     const r = await fetch(`/api/hospitals?sido=${encodeURIComponent(sido)}&gugun=${encodeURIComponent(gugun)}`);
     const data = await r.json();
     if (!data.success) { res.innerHTML=`<div class="status err">오류: ${data.error}</div>`; return; }
     const filtered = name
-      ? data.hospitals.filter(h => h.name.toLowerCase().includes(name))
+      ? data.hospitals.filter(h =>h.name.toLowerCase().includes(name))
       : data.hospitals;
     if (!filtered.length) { res.innerHTML='<div class="status err">병원을 찾을 수 없습니다</div>'; return; }
     res.innerHTML = filtered.map(h => `
@@ -8438,7 +8761,7 @@ async function fetchMsgs() {
   const out   = document.getElementById('output');
   const stat  = document.getElementById('fetchStatus');
   if (!hpid) { stat.innerHTML='<div class="status err">HPID를 입력하세요</div>'; return; }
-  stat.innerHTML = '<div class="status loading">🔄 API 조회 중...</div>';
+  stat.innerHTML = '<div class="status loading">API 조회 중...</div>';
   out.value = '';
   try {
     const r = await fetch(`/debug/msgs_json/${encodeURIComponent(hpid)}`);
@@ -8462,7 +8785,7 @@ async function fetchMsgs() {
     lines.push('=== 원시 XML ===');
     lines.push(data.raw_xml || '(없음)');
     out.value = lines.join('\n');
-    stat.innerHTML = `<div class="status ok">✅ ${data.total}건 로드 완료 — 아래 내용을 복사하세요</div>`;
+    stat.innerHTML = `<div class="status ok"> ${data.total}건 로드 완료 — 아래 내용을 복사하세요</div>`;
     out.focus(); out.select();
   } catch(e) {
     stat.innerHTML = `<div class="status err">오류: ${e.message}</div>`;
@@ -8474,11 +8797,11 @@ function copyAll() {
   out.select();
   try {
     navigator.clipboard.writeText(out.value)
-      .then(()=>{ document.getElementById('fetchStatus').innerHTML='<div class="status ok">✅ 클립보드에 복사됨</div>'; })
-      .catch(()=>{ document.execCommand('copy'); document.getElementById('fetchStatus').innerHTML='<div class="status ok">✅ 복사됨</div>'; });
+      .then(()=>{ document.getElementById('fetchStatus').innerHTML='<div class="status ok">클립보드에 복사됨</div>'; })
+      .catch(()=>{ document.execCommand('copy'); document.getElementById('fetchStatus').innerHTML='<div class="status ok">복사됨</div>'; });
   } catch(e) {
     document.execCommand('copy');
-    document.getElementById('fetchStatus').innerHTML='<div class="status ok">✅ 복사됨</div>';
+    document.getElementById('fetchStatus').innerHTML='<div class="status ok">복사됨</div>';
   }
 }
 </script>
@@ -8550,15 +8873,15 @@ def debug_msgs_json(hpid):
 # API URL 상수 (9개 전체)
 _BASE = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/'
 _APIS = {
-    'getEmrrmRltmUsefulSckbdInfoInqire':    _BASE + 'getEmrrmRltmUsefulSckbdInfoInqire',
-    'getSrsillDissAceptncPosblInfoInqire':  _BASE + 'getSrsillDissAceptncPosblInfoInqire',
-    'getEgytListInfoInqire':               _BASE + 'getEgytListInfoInqire',
-    'getEgytLcinfoInqire':                 _BASE + 'getEgytLcinfoInqire',
-    'getEgytBassInfoInqire':               _BASE + 'getEgytBassInfoInqire',
-    'getStrmListInfoInqire':               _BASE + 'getStrmListInfoInqire',
-    'getStrmLcinfoInqire':                 _BASE + 'getStrmLcinfoInqire',
-    'getStrmBassInfoInqire':               _BASE + 'getStrmBassInfoInqire',
-    'getEmrrmSrsillDissMsgInqire':         _BASE + 'getEmrrmSrsillDissMsgInqire',
+    'getEmrrmRltmUsefulSckbdInfoInqire': _BASE + 'getEmrrmRltmUsefulSckbdInfoInqire',
+    'getSrsillDissAceptncPosblInfoInqire': _BASE + 'getSrsillDissAceptncPosblInfoInqire',
+    'getEgytListInfoInqire': _BASE + 'getEgytListInfoInqire',
+    'getEgytLcinfoInqire': _BASE + 'getEgytLcinfoInqire',
+    'getEgytBassInfoInqire': _BASE + 'getEgytBassInfoInqire',
+    'getStrmListInfoInqire': _BASE + 'getStrmListInfoInqire',
+    'getStrmLcinfoInqire': _BASE + 'getStrmLcinfoInqire',
+    'getStrmBassInfoInqire': _BASE + 'getStrmBassInfoInqire',
+    'getEmrrmSrsillDissMsgInqire': _BASE + 'getEmrrmSrsillDissMsgInqire',
 }
 
 def _call_api(endpoint_name, params):
@@ -8590,7 +8913,7 @@ def debug_full_form():
     return render_template_string(r"""<!DOCTYPE html>
 <html lang="ko"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🔬 전체 API 디버그</title>
+<title>전체 API 디버그</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Malgun Gothic',monospace;background:#1e1e1e;color:#d4d4d4;padding:20px;}
@@ -8606,7 +8929,7 @@ input{width:100%;padding:10px;background:#2d2d2d;border:1px solid #555;
 .note{color:#888;font-size:0.82rem;margin-top:8px;}
 a{color:#4ec9b0;}
 </style></head><body>
-<h2>🔬 매뉴얼 9개 API 전체 조회 디버그</h2>
+<h2>매뉴얼 9개 API 전체 조회 디버그</h2>
 <p class="note" style="margin-bottom:18px;">특정 병원 HPID를 입력하면 매뉴얼의 모든 API를 호출하여 원본 응답 전체를 표시합니다.</p>
 
 <form method="get" action="/debug/full/result">
@@ -8616,7 +8939,7 @@ a{color:#4ec9b0;}
   <input name="sido" placeholder="예: 경기도">
   <label>시/군/구 (STAGE2/Q1 파라미터용)</label>
   <input name="gugun" placeholder="예: 성남시">
-  <button class="btn" type="submit">📡 전체 API 조회 시작</button>
+  <button class="btn" type="submit">전체 API 조회 시작</button>
 </form>
 <p class="note">시/도·시/군/구를 입력하지 않으면 기본정보 API에서 자동으로 추출을 시도합니다.</p>
 <p style="margin-top:14px;"><a href="/">← 홈으로</a></p>
@@ -8628,8 +8951,8 @@ def debug_full_result():
     """9개 API 전체 호출 후 결과를 복사 가능한 텍스트로 출력"""
     import html as _html
 
-    hpid  = request.args.get('hpid',  '').strip()
-    sido  = request.args.get('sido',  '').strip()
+    hpid  = request.args.get('hpid', '').strip()
+    sido  = request.args.get('sido', '').strip()
     gugun = request.args.get('gugun', '').strip()
 
     if not hpid:
@@ -8756,54 +9079,54 @@ def debug_full_result():
     SSEP = '-' * 50
     lines = []
     lines.append(SEP)
-    lines.append(f'  매뉴얼 9개 API 전체 조회 결과')
-    lines.append(f'  HPID: {hpid}  병원명: {name_from_basic}')
-    lines.append(f'  시도: {sido}  시군구: {gugun}')
-    lines.append(f'  위도: {lat}  경도: {lon}')
-    lines.append(f'  조회시각: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+    lines.append(f' 매뉴얼 9개 API 전체 조회 결과')
+    lines.append(f' HPID: {hpid}  병원명: {name_from_basic}')
+    lines.append(f' 시도: {sido}  시군구: {gugun}')
+    lines.append(f' 위도: {lat}  경도: {lon}')
+    lines.append(f' 조회시각: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     lines.append(SEP)
 
     api_labels = {
-        'getEgytBassInfoInqire':               '① 응급의료기관 기본정보 조회',
-        'getEmrrmRltmUsefulSckbdInfoInqire':    '② 응급실 실시간 가용병상정보 조회',
-        'getSrsillDissAceptncPosblInfoInqire':  '③ 중증질환자 수용가능정보 조회',
-        'getEgytListInfoInqire':               '④ 응급의료기관 목록정보 조회',
-        'getEgytLcinfoInqire':                 '⑤ 응급의료기관 위치정보 조회',
-        'getStrmListInfoInqire':               '⑥ 외상센터 목록정보 조회',
-        'getStrmLcinfoInqire':                 '⑦ 외상센터 위치정보 조회',
-        'getStrmBassInfoInqire':               '⑧ 외상센터 기본정보 조회',
-        'getEmrrmSrsillDissMsgInqire':         '⑨ 응급실 및 중증질환 메시지 조회',
+        'getEgytBassInfoInqire': '① 응급의료기관 기본정보 조회',
+        'getEmrrmRltmUsefulSckbdInfoInqire': '② 응급실 실시간 가용병상정보 조회',
+        'getSrsillDissAceptncPosblInfoInqire': '③ 중증질환자 수용가능정보 조회',
+        'getEgytListInfoInqire': '④ 응급의료기관 목록정보 조회',
+        'getEgytLcinfoInqire': '⑤ 응급의료기관 위치정보 조회',
+        'getStrmListInfoInqire': '⑥ 외상센터 목록정보 조회',
+        'getStrmLcinfoInqire': '⑦ 외상센터 위치정보 조회',
+        'getStrmBassInfoInqire': '⑧ 외상센터 기본정보 조회',
+        'getEmrrmSrsillDissMsgInqire': '⑨ 응급실 및 중증질환 메시지 조회',
     }
 
     for api_name, label in api_labels.items():
         r = results.get(api_name, {})
         lines.append('')
         lines.append(SSEP)
-        lines.append(f'  {label}')
-        lines.append(f'  엔드포인트: {api_name}')
+        lines.append(f' {label}')
+        lines.append(f' 엔드포인트: {api_name}')
         if r.get('note'):
-            lines.append(f'  [{r["note"]}]')
+            lines.append(f' [{r["note"]}]')
         if r.get('error'):
-            lines.append(f'  ⚠️ 오류: {r["error"]}')
+            lines.append(f' 오류: {r["error"]}')
         lines.append(SSEP)
         items_list = r.get('items', [])
         if items_list:
-            lines.append(f'  파싱 결과: {len(items_list)}건')
+            lines.append(f' 파싱 결과: {len(items_list)}건')
             for i, item in enumerate(items_list, 1):
-                lines.append(f'  ── 레코드 {i} ──')
+                lines.append(f' ── 레코드 {i} ──')
                 for k, v in sorted(item.items()):
                     if v:
-                        lines.append(f'    {k}: {v}')
+                        lines.append(f' {k}: {v}')
         else:
-            lines.append('  파싱 결과: 없음 (해당 병원 데이터 미존재 또는 오류)')
+            lines.append(' 파싱 결과: 없음 (해당 병원 데이터 미존재 또는 오류)')
         lines.append('')
-        lines.append('  [원시 XML]')
+        lines.append(' [원시 XML]')
         raw_text = r.get('raw', '').strip()
-        lines.append(raw_text if raw_text else '  (없음)')
+        lines.append(raw_text if raw_text else ' (없음)')
 
     lines.append('')
     lines.append(SEP)
-    lines.append('  END')
+    lines.append(' END')
     lines.append(SEP)
 
     full_text = '\n'.join(lines)
@@ -8831,15 +9154,14 @@ textarea{width:100%;height:calc(100vh - 70px);background:#111;color:#d4d4d4;
   line-height:1.55;resize:none;outline:none;}
 </style></head><body>
 <div class="hdr">
-  <h2>🔬 전체 API 덤프 — {{ hpid }} ({{ name }})</h2>
-  <button class="btn btn-green" onclick="copyAll()">📋 전체 복사</button>
-  <a class="btn" href="/debug/full">🔄 다른 병원</a>
-  <a class="btn" href="/">🏠 홈</a>
-  <span class="status" id="copyStatus">✅ 클립보드에 복사됨</span>
+  <h2>전체 API 덤프 — {{ hpid }} ({{ name }})</h2>
+  <button class="btn btn-green" onclick="copyAll()">전체 복사</button>
+  <a class="btn" href="/debug/full">다른 병원</a>
+  <a class="btn" href="/">홈</a>
+  <span class="status" id="copyStatus">클립보드에 복사됨</span>
 </div>
 <textarea id="out" readonly>{{ text }}</textarea>
-<script>
-function copyAll() {
+<script>function copyAll() {
   const ta = document.getElementById('out');
   ta.select();
   const st = document.getElementById('copyStatus');
@@ -8983,7 +9305,7 @@ if _IS_ANDROID:
         name = _re.sub(
             r'\s*(의료법인|학교법인|재단법인|사회복지법인|의료재단|학교법인)\s*', '', name)
         name = name.strip()
-        if len(name) > max_chars:
+        if len(name) >max_chars:
             name = name[:max_chars] + '…'
         return name
 
@@ -9020,11 +9342,27 @@ if _IS_ANDROID:
         _last_pip_data  = None  # 마지막 PiP 데이터 캐시 (resize 시 재빌드용)
 
         # ── 앱 시작 ─────────────────────────────────────────────
+        @staticmethod
+        def _purge_stale_notifications():
+            """이전 프로세스가 남긴 알림 제거 (좀비 방지)."""
+            if not _IS_ANDROID:
+                return
+            try:
+                from jnius import autoclass
+                PA  = autoclass('org.kivy.android.PythonActivity')
+                ctx = PA.mActivity.getApplicationContext()
+                nm  = PA.mActivity.getSystemService(ctx.NOTIFICATION_SERVICE)
+                nm.cancelAll()
+                _dlog('[Notify] 기동 시 잔존 알림 전체 제거')
+            except Exception as _pe:
+                _dlog(f'[Notify] 잔존 알림 제거 실패 (무시): {_pe}')
+
         def on_start(self):
+            EmergencyApp._purge_stale_notifications()
             _early_write('[STEP2] on_start()')
             _dlog('[Lifecycle] on_start')
             try:
-                self._pip_busy  = False   # ★ FIX(2026-C3): _enter_pip_mode 중복호출 방지 플래그
+                self._pip_busy  = False   #  FIX(2026-C3): _enter_pip_mode 중복호출 방지 플래그
                 self._pip_prefs = _load_pip_prefs()
                 self._setup_logging()
                 _dlog('[Lifecycle] 로깅 설정 완료')
@@ -9122,15 +9460,25 @@ if _IS_ANDROID:
                     nb.setSmallIcon(ctx.getApplicationInfo().icon)
                     nb.setContentTitle('응급의료 모니터')
                     nb.setContentText('백그라운드 갱신 실행 중 — 탭하여 열기')
-                    # ★ FIX(2026-C2): Pydroid3 대응 — 테스트 환경은 Ongoing=False
+                    #  FIX(2026-C2): Pydroid3 대응 — 테스트 환경은 Ongoing=False
                     # APK(정식빌드)에서만 영구 알림으로 동작시켜
                     # Pydroid3 종료 후 알림이 남는 문제를 방지한다.
                     _is_apk = not any('pydroid' in _p.lower() for _p in sys.path)
-                    nb.setOngoing(_is_apk)
+                    nb.setOngoing(False)
                     nb.setPriority(-2)   # PRIORITY_MIN
                     nb.setCategory('service')
-                    nm.notify(9001, nb.build())
-                    _dlog(f'[Kill방지] 알림 등록 완료 (ongoing={_is_apk})')
+                    #  좀비 알림 차단 (사용자 결정: 백그라운드 유지 포기)
+                    #   최근앱 스와이프로 태스크가 제거되면 프로세스가 죽어
+                    #   on_stop/atexit 가 실행되지 않는다. 그때 알림만 남는
+                    #   문제를 원천 차단하기 위해 상시 알림을 발행하지 않고,
+                    #   기존에 남아 있을 수 있는 알림을 제거만 한다.
+                    _ = _is_apk
+                    for _nid in (9001, 9002):
+                        try:
+                            nm.cancel(_nid)
+                        except Exception:
+                            pass
+                    _dlog('[Kill방지] 상시 알림 미발행 + 잔존 알림 정리 완료')
 
                     # atexit + SIGTERM/SIGINT 핸들러: on_stop() 미호출 시에도 알림 제거
                     import atexit as _atexit, signal as _signal
@@ -9262,7 +9610,7 @@ if _IS_ANDROID:
         def on_pause(self):
             """
             True 반환 → 프로세스 유지.
-            ★ 개선: pending 플래그 없이도 h_param이 세팅된 상태라면
+             개선: pending 플래그 없이도 h_param이 세팅된 상태라면
               홈/백 버튼 즉시 PiP 진입 (초기화면 통과 불필요).
             """
             _dlog('[Lifecycle] on_pause')
@@ -9281,10 +9629,12 @@ if _IS_ANDROID:
                 _dlog(f'[PiP] on_pause pending 처리: h={self._h_param[:50]}')
                 self._start_pip_refresh()
                 self._enter_pip_mode()
-            elif self._h_param:
-                # 이전에 선택된 병원 있음 → 즉시 PiP
-                _dlog('[PiP] on_pause: h_param 보존 → 즉시 PiP 진입')
+            elif self._h_param and (self._last_good_pip_data or {}).get('hospitals'):
+                # 이전에 선택된 병원 + 표시할 데이터 있음 → 즉시 PiP
+                _dlog('[PiP] on_pause: h_param + 데이터 보존 → 즉시 PiP 진입')
                 self._enter_pip_mode()
+            else:
+                _dlog('[PiP] on_pause: 표시할 데이터 없음 → PiP 진입 생략(빈 창 방지)')
             return True  # 절대 kill하지 않음
 
         def on_resume(self):
@@ -9297,7 +9647,7 @@ if _IS_ANDROID:
                 self._h_param = _pip_state.get('h_param', '')
                 self._iv_sec  = _pip_state.get('iv_sec', 180)
                 _dlog(f'[PiP] on_resume pending: h={self._h_param[:50]}')
-                # ★ FIX(2025): 타이머는 유지하고 즉시 한 번만 fetch
+                #  FIX(2025): 타이머는 유지하고 즉시 한 번만 fetch
                 # _start_pip_refresh()는 타이머 cancel+재등록 → Sync/on_pause와
                 # 중복 호출 시 3중 fetch thread → apis.data.go.kr 폭주 → HTTP 500.
                 # 타이머가 없을 때만 등록, 있을 때는 _do_pip_fetch 단독 실행.
@@ -9305,11 +9655,11 @@ if _IS_ANDROID:
                     self._start_pip_refresh()
                 else:
                     Clock.schedule_once(lambda dt: self._do_pip_fetch(0), 0)
-                # ★ 즉시 PiP (이슈3: 백그라운드 버튼 → 즉시 최소화)
+                #  즉시 PiP (이슈3: 백그라운드 버튼 → 즉시 최소화)
                 Clock.schedule_once(lambda dt: self._enter_pip_mode(), 0.1)
             else:
                 _dlog('[Lifecycle] on_resume: pending 없음')
-                # ★ FIX(2025-B3): pending 없이도 last_pip_data가 있으면 재렌더링
+                #  FIX(2025-B3): pending 없이도 last_pip_data가 있으면 재렌더링
                 # moveTaskToBack 도중 clear_widgets()가 실행된 상태로 백그라운드에
                 # 진입했을 경우, 복귀 시 빈 컨테이너가 표시될 수 있음.
                 # on_resume 시 마지막 성공 데이터로 즉시 화면을 복원한다.
@@ -9540,7 +9890,7 @@ if _IS_ANDROID:
                     text='브라우저',
                     background_color=(0.18, 0.38, 0.75, 1),
                     font_size='10sp')
-                # ★ FIX: 고정 URL(_TARGET_URL) 대신 최근 비교화면(/last)으로 복귀
+                #  FIX: 고정 URL(_TARGET_URL) 대신 최근 비교화면(/last)으로 복귀
                 #   → PiP에서 돌아올 때 엉뚱한 병원이 표시되던 문제 해결
                 browser_btn.bind(on_press=lambda _btn: threading.Thread(
                     target=_open_browser_android,
@@ -9555,13 +9905,13 @@ if _IS_ANDROID:
                 Clock.schedule_interval(self._tick_timer, 1)
                 Clock.schedule_interval(self._update_debug_panel, 2)
 
-                # ★ 이슈4: 탭/더블탭 감지 — root 전체 터치 바인딩
+                #  이슈4: 탭/더블탭 감지 — root 전체 터치 바인딩
                 self._tap_count   = 0
                 self._tap_timer   = None
                 self._last_tap_t  = 0.0
                 root.bind(on_touch_down=self._on_root_touch)
 
-                # ★ 이슈4: 흔들기 감지 (Android 가속도계)
+                #  이슈4: 흔들기 감지 (Android 가속도계)
                 Clock.schedule_once(lambda dt: self._setup_shake_sensor(), 3)
 
                 _early_write('[STEP3] build() OK')
@@ -9575,7 +9925,7 @@ if _IS_ANDROID:
         # ── 창 크기 변화 시 PiP UI 재빌드 + 레이아웃 보정 ──────────
         def _on_window_resize(self, window, width, height):
             try:
-                is_landscape = (width > height * 1.2)
+                is_landscape = (width >height * 1.2)
                 _dlog(f'[Resize] {width}x{height} → {"가로" if is_landscape else "세로"} | data:{getattr(self,"_pip_base_sp","-")}sp bar:{getattr(self,"_pip_bar_sp","-")}sp')
 
                 # 가로화면 감지: 로그패널 축소, 버튼행 확보
@@ -9586,11 +9936,11 @@ if _IS_ANDROID:
                 if hasattr(self, '_btn_row'):
                     self._btn_row.height = max(34, min(50, int(height * 0.07)))
 
-                # ★ 갱신막대 행 높이 동적 조절 (가로/세로 전환 시 최대화)
+                #  갱신막대 행 높이 동적 조절 (가로/세로 전환 시 최대화)
                 if hasattr(self, '_timer_row'):
                     self._timer_row.height = max(18, min(30, int(height * 0.045)))
 
-                # ★ 이슈9: PiP 창 크기 조절 시 폰트/레이아웃 동적 재계산
+                #  이슈9: PiP 창 크기 조절 시 폰트/레이아웃 동적 재계산
                 # Window 크기 변화 = PiP 창 크기 변화 → 즉시 재빌드
                 if self._last_pip_data:
                     # 약간의 지연으로 레이아웃 안정화 후 재빌드
@@ -9686,7 +10036,7 @@ if _IS_ANDROID:
                 delta = abs(mag - self._shake_last_mag)
                 self._shake_last_mag = mag
                 # 임계값: 15 m/s² (가벼운 흔들기)
-                if delta > 15:
+                if delta >15:
                     _dlog(f'[Shake] 흔들기 감지 (Δ={delta:.1f}) → 즉시 갱신')
                     Clock.schedule_once(lambda _dt: self._do_pip_fetch(0), 0)
                     # 상황판도 함께 갱신 (pip&상황판 연동, 이슈5)
@@ -9746,7 +10096,7 @@ if _IS_ANDROID:
                 )
 
                 # Canvas 타이머 바: 남은비율로 직접 업데이트 (픽셀 완벽)
-                rem_ratio = (remaining / self._iv_sec) if self._iv_sec > 0 else 0.0
+                rem_ratio = (remaining / self._iv_sec) if self._iv_sec >0 else 0.0
                 rem_ratio = max(0.0, min(1.0, rem_ratio))
                 try:
                     self._timer_bar_ratio[0] = rem_ratio
@@ -9785,7 +10135,7 @@ if _IS_ANDROID:
                 _s.close()
                 self._status_lbl.text  = 'Flask OK'
                 self._status_lbl.color = (0.10, 0.75, 0.20, 1)
-                # ★ Flask 준비 완료 → 진행바 숨김 (그래픽 깨짐 방지)
+                #  Flask 준비 완료 → 진행바 숨김 (그래픽 깨짐 방지)
                 try:
                     self._progress_bar.height  = 0
                     self._progress_bar.opacity = 0
@@ -9804,7 +10154,7 @@ if _IS_ANDROID:
                 self._iv_sec  = _pip_state.get('iv_sec', 180)
                 _dlog(f'[PiP] Clock 감지: h={self._h_param[:40]}')
                 self._start_pip_refresh()
-                # ★ 즉시 PiP 진입 (이슈3: 백그라운드 버튼 시 즉시 최소화)
+                #  즉시 PiP 진입 (이슈3: 백그라운드 버튼 시 즉시 최소화)
                 Clock.schedule_once(lambda dt: self._enter_pip_mode(), 0.05)
 
             # ② 브라우저 갱신 완료 → PiP도 즉시 갱신 (동기화)
@@ -9816,7 +10166,7 @@ if _IS_ANDROID:
                     _dlog(f'[Sync] h_param 변경 적용: {self._h_param[:30]} → {_new_h[:30]}')
                     self._h_param = _new_h
                 _dlog('[Sync] 브라우저 갱신 감지 → PiP 즉시 갱신 (단독 fetch, 타이머 유지)')
-                # ★ FIX(2025): _start_pip_refresh → _do_pip_fetch(0) 단독 호출로 변경
+                #  FIX(2025): _start_pip_refresh → _do_pip_fetch(0) 단독 호출로 변경
                 # 이유: _start_pip_refresh는 타이머 cancel+재등록을 수행한다.
                 #   on_resume(pending=True) → _start_pip_refresh ①
                 #   fetch_pending Sync 감지 → _start_pip_refresh ② (이 라인, 구 코드)
@@ -9856,7 +10206,7 @@ if _IS_ANDROID:
             sys_val = 0
             try: sys_val = _sys.getandroidapilevel()
             except Exception: pass
-            if sys_val > 21:
+            if sys_val >21:
                 _dlog(f'[API] sys={sys_val} (신뢰)')
                 return sys_val
             _dlog(f'[API] sys={sys_val} ≤ 21 → Java 조회')
@@ -9872,13 +10222,29 @@ if _IS_ANDROID:
                 from jnius import autoclass
                 SP = autoclass('android.os.SystemProperties')
                 real = int(SP.get('ro.build.version.sdk', '0'))
-                if real > 0:
+                if real >0:
                     _dlog(f'[API] SystemProperties={real}')
                     return real
             except Exception as _e2:
                 _dlog(f'[API] SystemProperties 실패: {_e2}')
             _dlog('[API] 전부 실패 → 99 강행')
             return 99
+
+        def _pip_aspect_for(self, prefs=None):
+            """병원 수에 맞춘 PiP 종횡비. 내용이 잘리지 않도록 세로를 늘린다.
+            안드로이드 허용 범위(0.418~2.39)를 넘지 않게 클램프한다."""
+            prefs = prefs or self._pip_prefs or {'aspect_w': 16, 'aspect_h': 9}
+            try:
+                n = len((self._last_good_pip_data or {}).get('hospitals', []))
+            except Exception:
+                n = 0
+            if n <= 0:
+                return int(prefs.get('aspect_w', 16)), int(prefs.get('aspect_h', 9))
+            # 헤더 1행 + 병원 n행 → 가로 16 기준 세로 = 4 + 4.2n (경험값)
+            aw = 16
+            ah = int(round(4 + 4.2 * n))
+            ah = max(7, min(38, ah))          # 16/38≈0.42, 16/7≈2.29 → 허용범위 내
+            return aw, ah
 
         # ── API 31+: 자동 PiP 진입 설정 ─────────────────────
         def _setup_pip_auto_enter(self):
@@ -9895,12 +10261,17 @@ if _IS_ANDROID:
                 PIPB     = autoclass('android.app.PictureInPictureParams$Builder')
                 Rational = autoclass('android.util.Rational')
                 prefs    = self._pip_prefs or {'aspect_w': 16, 'aspect_h': 9}
+                #  좀비 PiP 차단: 표시할 데이터가 있을 때만 자동 진입 허용.
+                #   빈 상태에서 홈으로 나가면 까만 PiP 창이 뜨던 문제.
+                _has_data = bool(getattr(self, '_h_param', '')) and bool(
+                    (getattr(self, '_last_good_pip_data', None) or {}).get('hospitals'))
+                aw, ah = self._pip_aspect_for(prefs)
                 params = (PIPB()
-                          .setAspectRatio(Rational(prefs['aspect_w'], prefs['aspect_h']))
-                          .setAutoEnterEnabled(True)
+                          .setAspectRatio(Rational(aw, ah))
+                          .setAutoEnterEnabled(bool(_has_data))
                           .build())
                 activity.setPictureInPictureParams(params)
-                _dlog('[PiP] setAutoEnterEnabled(True) 완료')
+                _dlog(f'[PiP] setAutoEnterEnabled({bool(_has_data)}) 비율={aw}:{ah}')
             except Exception as e:
                 _dlog(f'[PiP] _setup_pip_auto_enter 실패: {e}')
 
@@ -9929,6 +10300,14 @@ if _IS_ANDROID:
                     with open(path, encoding='utf-8') as _sf:
                         state = json.loads(_sf.read())
                     h = state.get('h_param', '')
+                    #  좀비 PiP 차단: 30분 지난 상태는 폐기한다.
+                    if time.time() - float(state.get('saved_at', 0)) >1800:
+                        _dlog('[State] 만료된 저장 상태 → 폐기')
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+                        continue
                     if h:
                         self._h_param = h
                         self._iv_sec  = int(state.get('iv_sec', 180))
@@ -9977,7 +10356,7 @@ if _IS_ANDROID:
                 try: self._pip_refresh_ev.cancel()
                 except Exception: pass
             self._do_pip_fetch(0)
-            if self._iv_sec > 0:
+            if self._iv_sec >0:
                 self._pip_refresh_ev = Clock.schedule_interval(
                     self._do_pip_fetch, self._iv_sec)
 
@@ -10011,7 +10390,7 @@ if _IS_ANDROID:
             hospitals = data.get('hospitals', [])
             fetched   = data.get('fetched_at', '')
 
-            # ★ FIX(2025): 빈 결과 수신 시 마지막 성공 데이터 유지
+            #  FIX(2025): 빈 결과 수신 시 마지막 성공 데이터 유지
             # pip_data 예외 핸들러가 hospitals=[] 를 반환할 때 화면이 "데이터 없음"으로
             # 지워지지 않도록, 직전 성공 fetch 데이터를 그대로 재사용한다.
             if not hospitals:
@@ -10059,7 +10438,7 @@ if _IS_ANDROID:
                 except Exception:
                     pass
 
-            # ★ 최신 데이터 캐시 저장 — resize 시 _on_window_resize가 재빌드에 사용
+            #  최신 데이터 캐시 저장 — resize 시 _on_window_resize가 재빌드에 사용
             # hospitals 변수는 이미 0개 폴백 처리가 완료된 값을 사용한다.
             self._last_pip_data = {**data, 'hospitals': hospitals}
 
@@ -10070,9 +10449,12 @@ if _IS_ANDROID:
                 w = Window.width
                 h = Window.height
                 n = max(1, len(hospitals))
-                # ★ 이슈8: 시인성 최대 폰트 — 병원수 2개 기준 14sp, 많을수록 축소
+                #  이슈8: 시인성 최대 폰트 — 병원수 2개 기준 14sp, 많을수록 축소
                 # 최소값 상향(9→11) + 기본값 상향(14→16)
-                base_sp = max(11, min(16, 16 - max(0, n - 2)))
+                # 창 폭·높이에 비례하는 기준 폰트 (PiP 크기 조절 시 내용도 비례)
+                _by_w = w / 26.0
+                _by_h = h / (3.6 * (n + 1))
+                base_sp = int(max(8, min(24, min(_by_w, _by_h))))
             except Exception:
                 w = 480; h = 960; n = 1; base_sp = 13
             bar_sp = max(9, base_sp - 2)   # 막대 행: base보다 2sp 작게 (최소 9sp)
@@ -10084,7 +10466,7 @@ if _IS_ANDROID:
 
             # ── sp→dp 변환: 기기 fontScale·밀도 반영 ────────────────
             # Kivy의 height 속성은 dp 단위이나, [size=Xsp] 마크업은 sp 단위.
-            # sp = dp * fontScale이므로 fontScale > 1 환경(접근성 설정 등)에서는
+            # sp = dp * fontScale이므로 fontScale >1 환경(접근성 설정 등)에서는
             # sp값 그대로 height에 사용하면 텍스트가 컨테이너를 넘쳐 클리핑됨.
             # kivy.metrics.sp()가 sp → dp(픽셀) 변환값을 정확히 반환하므로
             # 이를 height 계산에 사용하면 클리핑을 완전히 방지할 수 있음.
@@ -10128,12 +10510,12 @@ if _IS_ANDROID:
                 _C_YELLOW = '#EDBB4A'; _C_YUSED = '#58400A'
                 _C_RED    = '#E05550'; _C_RUSED = '#511210'
 
-                # ★ FIX(2026-C1): format_bed_cell()과 동일한 sentinel 조건으로 통일.
+                #  FIX(2026-C1): format_bed_cell()과 동일한 sentinel 조건으로 통일.
                 # 구 코드: a == -1 → total 무관하게 회색 '-' 처리
                 #   → hvec=-1 이지만 total=39인 경우(초과운용 데이터)를
                 #     "정보없음"으로 잘못 숨기는 버그 (세브란스 응급 미표시).
                 # 신 코드: a == -1 AND t <= 0 인 경우만 "정보없음" 처리.
-                #   → a < 0 이지만 t > 0 (예: -1/39)은 빨간색으로 정상 표시.
+                #   → a < 0 이지만 t >0 (예: -1/39)은 빨간색으로 정상 표시.
                 #   브라우저 format_bed_cell()의 'avail == -1 and total <= 0' 조건과 동일.
                 if a == -1 and t <= 0:
                     return ('[color=#444444]-[/color]',
@@ -10143,8 +10525,8 @@ if _IS_ANDROID:
                 if a < 0:
                     a = 0
 
-                label = f'{_a_display}/{t}' if t > 0 else str(_a_display)
-                p     = (a / t) if t > 0 else (1.0 if a > 0 else 0.0)
+                label = f'{_a_display}/{t}' if t >0 else str(_a_display)
+                p     = (a / t) if t >0 else (1.0 if a >0 else 0.0)
                 p     = max(0.0, min(1.0, p))
 
                 c  = _C_GREEN  if p >= 0.5 else _C_YELLOW if p >= 0.2 else _C_RED
@@ -10152,7 +10534,7 @@ if _IS_ANDROID:
 
                 return f'[color={c}][b]{label}[/b][/color]', p, c, cu, c
 
-            # ★ FIX(2025-B3): 원자적 위젯 교체 — 사라짐 방지
+            #  FIX(2025-B3): 원자적 위젯 교체 — 사라짐 방지
             # 기존 방식: clear_widgets() → 하나씩 add_widget()
             #   → moveTaskToBack 타이밍과 겹치면 clear 후 add 전 상태가
             #     화면에 노출 → 백그라운드 복귀 시 빈 컨테이너 표시("사라짐")
@@ -10187,17 +10569,17 @@ if _IS_ANDROID:
                 raw_name = h.get('name') or ''
                 name     = _pip_shortname(raw_name)
 
-                hvec  = h.get('hvec',  -1); hvec_t  = h.get('hvec_t',  0)
-                hvgc  = h.get('hvgc',  -1); hvgc_t  = h.get('hvgc_t',  0)
-                hv36  = h.get('hv36',  -1); hv36_t  = h.get('hv36_t',  0)
-                hicu  = h.get('hicu',  -1); hicu_t  = h.get('hicu_t',  0)
+                hvec  = h.get('hvec', -1); hvec_t  = h.get('hvec_t',  0)
+                hvgc  = h.get('hvgc', -1); hvgc_t  = h.get('hvgc_t',  0)
+                hv36  = h.get('hv36', -1); hv36_t  = h.get('hv36_t',  0)
+                hicu  = h.get('hicu', -1); hicu_t  = h.get('hicu_t',  0)
 
-                # ★ 입원 표시: hvgc(일반) + hv36(응급전용) 합산
+                #  입원 표시: hvgc(일반) + hv36(응급전용) 합산
                 # 비교화면의 "입원실 일반 + 응급전용" 합계와 동일하게 표시
                 # 한쪽만 데이터 있는 경우(-1 제외)도 올바르게 합산
                 if hvgc >= 0 and hv36 >= 0:
                     _gc_combined   = hvgc + hv36
-                    _gc_t_combined = (hvgc_t if hvgc_t > 0 else 0) + (hv36_t if hv36_t > 0 else 0)
+                    _gc_t_combined = (hvgc_t if hvgc_t >0 else 0) + (hv36_t if hv36_t >0 else 0)
                 elif hvgc >= 0:
                     _gc_combined   = hvgc
                     _gc_t_combined = hvgc_t
@@ -10235,6 +10617,9 @@ if _IS_ANDROID:
                     text=f'[size={base_sp}sp][b][color=#dde0ff]{name}[/color][/b][/size]',
                     markup=True,
                     size_hint_x=0.42,
+                    #  줄바꿈 금지 — 넘치면 말줄임 (잘림 방지)
+                    shorten=True, shorten_from='right', split_str='',
+                    max_lines=1,
                     halign='left', valign='middle')
                 name_lbl.bind(size=name_lbl.setter('text_size'))
                 hosp_row.add_widget(name_lbl)
@@ -10253,10 +10638,10 @@ if _IS_ANDROID:
                     import re as _re_cell
                     _plain = _re_cell.sub(r'\[.*?\]', '', num_mu)
                     _plen  = len(_plain)
-                    # ★ FIX(2025): 글자 수에 따라 폰트 크기와 숫자 열 폭을 동시 조정.
+                    #  FIX(2025): 글자 수에 따라 폰트 크기와 숫자 열 폭을 동시 조정.
                     # 고DPI 기기(1440px 폭) 기준:
                     #   num_lbl 폭 ≈ num_sx × 0.333 × 0.58 × screen_w ≈ 153px (num_sx=0.55 시)
-                    #   입원 "351/1268"(8자) → ~22px/자 × 8 = 176px > 153px → 오버플로우
+                    #   입원 "351/1268"(8자) → ~22px/자 × 8 = 176px >153px → 오버플로우
                     #   우측정렬이므로 맨 끝 1자리만 표시되는 증상 발생.
                     #   7자("74/1527")만 가까스로 들어가 마지막 병원만 정상 표시됨.
                     # 해결: 글자 수가 늘어날수록 폰트 축소 + 태그 열을 좁혀 숫자 열 확보.
@@ -10376,7 +10761,7 @@ if _IS_ANDROID:
                 _dlog('[PiP] PC 환경 → 스킵')
                 return
 
-            # ★ FIX(2026-C3): 중복 진입 차단
+            #  FIX(2026-C3): 중복 진입 차단
             # moveTaskToBack() 폴백이 on_pause()를 재트리거하면서
             # _enter_pip_mode()가 연속으로 두 번 호출되는 패턴을 방지.
             # _pip_busy가 True인 동안은 즉시 반환.
@@ -10483,7 +10868,7 @@ if _IS_ANDROID:
                             _dlog('[PiP] 파라미터 없이 성공')
                         except Exception as _e2:
                             _dlog(f'[PiP] 모든 시도 실패: {_e2}')
-                            # ★ PiP 불가 폴백: moveTaskToBack으로 백그라운드 전환
+                            #  PiP 불가 폴백: moveTaskToBack으로 백그라운드 전환
                             # (PiP 창은 안 뜨지만 앱이 백그라운드에서 타이머 계속 작동)
                             try:
                                 activity.moveTaskToBack(True)
@@ -10491,7 +10876,7 @@ if _IS_ANDROID:
                             except Exception as _mbe:
                                 _dlog(f'[PiP] moveTaskToBack 실패: {_mbe}')
                 finally:
-                    # ★ FIX(2026-C3): _do_pip 완료(성공/실패/예외 불문) 후 플래그 해제
+                    #  FIX(2026-C3): _do_pip 완료(성공/실패/예외 불문) 후 플래그 해제
                     # 1.5초 지연: on_pause가 _do_pip 완료 직후 재트리거되더라도
                     # 해당 on_pause 내 _enter_pip_mode 호출까지 차단 후 해제.
                     Clock.schedule_once(
