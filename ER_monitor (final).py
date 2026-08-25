@@ -255,6 +255,12 @@ HTML = '''
         select:disabled { background: #f0f0f0; }
         .btn { text-align: center; justify-content: center; }
         button, .sat-btn, .lv-btn { text-align: center; }
+        /* 등급(권역/센터/기관/모두) · 병상 포화도 버튼 높이 통일 */
+        .filter-row .lv-btn, .filter-row .sat-btn {
+            height: 2.6rem; box-sizing: border-box;
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 0 10px; line-height: 1;
+        }
         .btn {
             width: 100%;
             padding: 8px 14px;
@@ -548,7 +554,7 @@ HTML = '''
         </div>
         <div id="regionPane">
             <div class="form-group" style="margin-bottom:8px;">
-                <select id="sido"><option value="">시/도를 선택하세요</option></select>
+                <select id="sido"><option value="">시/도를 선택하세요 (선택 안 하면 전국)</option></select>
             </div>
             <div class="form-group" style="margin-bottom:8px;">
                 <select id="gugun" disabled><option value="">시/군/구 (선택 안 하면 시/도 전체)</option></select>
@@ -572,7 +578,7 @@ HTML = '''
             <button type="button" class="sat-btn" id="satBtn">병상 포화도</button>
         </div>
         <div style="display:flex;gap:8px;align-items:stretch;">
-            <button class="btn" id="resBtn" style="flex:1 1 0;min-width:0;margin-top:0;white-space:nowrap;overflow:hidden;background:linear-gradient(135deg,#2f6f5f,#1d4c41);">자원 조건</button>
+            <button class="btn" id="resBtn" style="flex:1 1 0;min-width:0;margin-top:0;white-space:nowrap;overflow:hidden;padding:8px 4px;background:linear-gradient(135deg,#2f6f5f,#1d4c41);">자원 조건</button>
             <button class="btn" id="searchBtn" style="flex:2 1 0;min-width:0;margin-top:0;">병원 검색</button>
         </div>
         <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">저장 (단독 HTML — 선택+조회)</button>
@@ -757,7 +763,38 @@ HTML = '''
         const selectedBox = document.getElementById('selectedBox');
         const selectedList= document.getElementById('selectedList');
         const compareBtn  = document.getElementById('compareBtn');
-        try { document.getElementById('saveAppBtn').onclick = () => { location.href = '/export'; }; } catch(e) {}
+        // 저장: location.href 이동 시 서버가 죽어 있으면 '연결 거부' 오류 페이지로
+        // 이탈해 작업 내용을 잃는다. fetch + Blob 다운로드로 바꿔 페이지를 유지한다.
+        async function saveStandaloneHtml() {
+            const btn = document.getElementById('saveAppBtn');
+            const old = btn ? btn.textContent : '';
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = '저장 파일 생성 중...'; }
+                const r = await fetch('/export', { cache: 'no-store' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const html = await r.text();
+                const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+                const a = document.createElement('a');
+                const p = new Date();
+                const z = n => String(n).padStart(2, '0');
+                a.href = url;
+                a.download = 'er_app_' + p.getFullYear() + z(p.getMonth() + 1) + z(p.getDate())
+                             + '_' + z(p.getHours()) + z(p.getMinutes()) + '.html';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(function () {
+                    try { a.remove(); URL.revokeObjectURL(url); } catch (e) {}
+                }, 4000);
+            } catch (e) {
+                nsdbg('export FAIL ' + ((e && e.message) || e));
+                alert('저장 실패: ' + ((e && e.message) || e)
+                      + '\\n\\n서버(파이썬 앱)가 종료된 상태입니다. 앱을 다시 실행한 뒤 저장하십시오.'
+                      + '\\n현재 화면의 검색 결과는 그대로 유지됩니다.');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = old; }
+            }
+        }
+        try { document.getElementById('saveAppBtn').onclick = saveStandaloneHtml; } catch(e) {}
 
         for (const sido in districts) {
             const opt = document.createElement('option');
@@ -867,6 +904,43 @@ HTML = '''
         }
 
         // 재시도 래퍼: 서버 일시 중단(앱 백그라운드) 대비
+        // ── 서버(파이썬) 사망 시 공공API 직접 호출로 자동 전환 ──────────
+        //   EX 엔진은 페이지 하단에 상시 내장된다. 서버가 살아있으면 사용되지 않는다.
+        var EXFALL_ON = false;
+        function exFallBanner() {
+            if (EXFALL_ON) return;
+            EXFALL_ON = true;
+            try {
+                var bar = document.getElementById('reconBar');
+                if (bar) {
+                    bar.textContent = ' 서버 연결 끊김 — 직접 조회 모드로 계속 동작합니다';
+                    bar.style.background = '#8a6d1f';
+                    bar.style.display = 'block';
+                }
+            } catch (e) {}
+        }
+        async function exFallback(url) {
+            if (typeof EX === 'undefined' || !EX) throw new Error('폴백 엔진 없음');
+            var q = {}, qs = url.split('?')[1] || '';
+            qs.split('&').forEach(function (kv) {
+                if (!kv) return;
+                var i = kv.indexOf('=');
+                q[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1));
+            });
+            var path = url.split('?')[0];
+            exFallBanner();
+            nsdbg('EX fallback ' + path);
+            if (path.indexOf('/api/hospitals_all') === 0) return EX.fetchAllHospitals(false);
+            if (path.indexOf('/api/hospitals') === 0)
+                return EX.fetchRegionHospitals(q.sido || '', q.gugun || '');
+            if (path.indexOf('/api/beds') === 0) return EX.fetchBeds(q.sido || '');
+            if (path.indexOf('/api/bed_saturation') === 0)
+                return EX.fetchBedSaturation(q.force === '1');
+            if (path.indexOf('/api/hospital_detail') === 0)
+                return EX.fetchDetail(q.hpid || '', q.sido || '', q.gugun || '');
+            throw new Error('폴백 미지원 경로: ' + path);
+        }
+
         async function fetchJSON(url, tries) {
             tries = tries || 3;
             var last = null;
@@ -882,6 +956,11 @@ HTML = '''
                           + ' — ' + ((e && e.message) || e));
                     if (i < tries - 1) await new Promise(function (r2) { setTimeout(r2, 1200 * (i + 1)); });
                 }
+            }
+            try {
+                return await exFallback(url);          // ← 서버 사망 시 직접 조회
+            } catch (e2) {
+                nsdbg('EX fallback 실패 ' + ((e2 && e2.message) || e2));
             }
             throw last;
         }
@@ -1231,12 +1310,12 @@ HTML = '''
             var b = document.getElementById('resBtn');
             if (!b) return;
             var on = resActive();
-            b.textContent = on ? ('자원 조건 (' + resKeys().length + ')') : '자원 조건';
+            b.textContent = on ? ('자원 (' + resKeys().length + ')') : '자원 조건';
             b.title = on ? resKeys().map(function (k) { return RES_LABEL[k]; }).join(' + ')
                            + ' (모두 보유)' : '자원 조건 미설정';
             b.style.background = on ? 'linear-gradient(135deg,#16a34a,#065f46)'
                                     : 'linear-gradient(135deg,#2f6f5f,#1d4c41)';
-            fitBtnText(b, 1.0);
+            // 폰트는 CSS 고정값 사용 (동적 축소·복귀 문제 원천 제거)
         }
         function resSetEnabled(on) {
             var b = document.getElementById('resBtn');
@@ -1892,14 +1971,16 @@ COMPARE_WINDOW_HTML = '''
         .hdr-right { position: absolute; right: 0; top: 50%;
                      transform: translateY(-50%); display: flex;
                      align-items: center; gap: 8px; }
+        /* 복귀 버튼: 헤더 좌상단 모서리에 밀착, 각진 형태 */
+        .header { padding-top: 6px; }
         /* 제목: 축소본의 2배, 채도 +30% (#667eea -> #525DFE) */
         .header h1 { color: #525DFE; font-size: calc({{ title_font_size }} * 1.24);
                      margin: 0; padding-left: 0; }
         .back-sel {
-            position: absolute; top: 6px; left: 6px;
-            background: #BEC0C2; color: #626A75; border: 1px solid #B2B6BA;
-            border-radius: 6px; padding: 2px 7px; font-size: 0.66rem;
-            font-weight: 600; line-height: 1.35; cursor: pointer;
+            position: absolute; top: 0; left: 0; z-index: 5;
+            background: #eef0f3; color: #7b8492; border: 1px solid #dfe3e8;
+            border-radius: 0; padding: 1px 4px; font-size: 0.58rem;
+            font-weight: 600; line-height: 1.15; cursor: pointer;
         }
         .back-sel:active { background: #e2e6ea; }
         /* 응급의료상황판 폰트 +30% */
@@ -1926,28 +2007,34 @@ COMPARE_WINDOW_HTML = '''
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             padding: 4px 2px !important; line-height: 1.2;
         }
+        /* 병원명: 줄바꿈 없이 최대 크기. 상한은 갱신주기 라벨과 동일 */
         .comparison-table thead th.hospital-name {
-            font-size: clamp(0.5rem, 1.5vw, 0.9rem);
-            white-space: normal; word-break: keep-all; line-height: 1.3;
-            max-width: 150px; overflow: visible;
+            font-size: clamp(0.42rem, 2.0vw, {{ base_font_size }});
+            white-space: nowrap; word-break: keep-all; line-height: 1.25;
+            max-width: 150px; overflow: hidden; text-overflow: ellipsis;
         }
         .comparison-table thead th.hospital-name.long-name {
-            font-size: clamp(0.35rem, 1.1vw, 0.65rem);
-            white-space: normal; word-break: keep-all; line-height: 1.3;
-            max-width: 150px; overflow: visible;
+            font-size: clamp(0.36rem, 1.5vw, calc({{ base_font_size }} * 0.85));
+            white-space: nowrap; word-break: keep-all; line-height: 1.25;
+            max-width: 150px; overflow: hidden; text-overflow: ellipsis;
         }
         .comparison-table thead th.hospital-name.very-long-name {
-            font-size: clamp(0.28rem, 0.85vw, 0.5rem);
-            white-space: normal; word-break: keep-all; line-height: 1.3;
-            max-width: 150px; overflow: visible;
+            font-size: clamp(0.30rem, 1.15vw, calc({{ base_font_size }} * 0.7));
+            white-space: nowrap; word-break: keep-all; line-height: 1.25;
+            max-width: 150px; overflow: hidden; text-overflow: ellipsis;
         }
         .comparison-table thead th:first-child { width: 15%; min-width: 60px; }
-        /* 조회화면 모든 컨트롤 높이 = 즉시 갱신 버튼 높이로 통일 */
+        /* 조회화면 컨트롤 높이 — 갱신주기 콤보박스 기준(변경 전 높이)으로 통일 */
+        /* '표시 항목' 버튼만 녹색 */
+        .refresh-controls button#secBtn { background: #2e7d32; }
         .refresh-controls button,
         .refresh-controls select,
-        .refresh-controls input[type="number"] {
-            height: 2.15rem; box-sizing: border-box; padding: 0 8px;
-            line-height: 1; text-align: center; vertical-align: middle;
+        .refresh-controls input[type="number"],
+        .refresh-controls .rc-btn {
+            height: auto; min-height: 0; box-sizing: border-box;
+            padding: 0px 4px; line-height: 1.35;
+            font-size: {{ base_font_size }};
+            text-align: center; vertical-align: middle;
         }
         .refresh-controls { 
             display: flex; align-items: center; justify-content: center;
@@ -2043,6 +2130,8 @@ COMPARE_WINDOW_HTML = '''
         }
         .exception-ok { color: #4CAF50; font-weight: 600; }
         .exception-warning { color: #f44336; font-weight: 600; line-height: 1.4; }
+        /* 예외상황 '열 제목'만 적색 (셀 내용 색상은 기존 유지) */
+        .category-header.cat-exception { color: #f44336; }
         .bell-btn {
             position: absolute; top: 1px; right: 1px; z-index: 12;
             font-size: 0.8rem; line-height: 1; padding: 2px 3px;
@@ -2057,12 +2146,12 @@ COMPARE_WINDOW_HTML = '''
 </head>
 <body>
     <div class="header">
+        <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
+                onclick="ermonBackToSelect()">← 병원 선택</button>
         <div class="hdr-row">
             <h1><span class="h1-main">응급의료상황판</span></h1>
             <div class="hdr-right">
                 <span class="h1-sub">(<span id="queryTime">{{ current_time }}</span>기준)</span>
-                <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
-                        onclick="ermonBackToSelect()">← 병원 선택</button>
             </div>
         </div>
         <div class="refresh-controls">
@@ -2086,17 +2175,31 @@ COMPARE_WINDOW_HTML = '''
         <script>
         // 병원 선택 화면 복귀 + 안드로이드 백버튼 가로채기(앱 종료 방지)
         function ermonBackToSelect() {
+            // 저장본에서는 이 화면이 상위 문서의 iframe(srcdoc) 안에 있다.
+            // history.back() 을 쓰면 최상위 문서가 원본 content:// 로 되돌아가
+            // 권한 만료로 ERR_FILE_NOT_FOUND 가 난다. 오버레이만 닫는다.
+            try {
+                if (window.parent && window.parent !== window
+                    && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
+                    window.parent.EXAPP.closeCompare();
+                    return;
+                }
+            } catch (e) {}
             try {
                 if (location.protocol === 'http:' || location.protocol === 'https:') {
                     location.href = '/';
                     return;
                 }
             } catch (e) {}
-            try { if (history.length >1) { history.back(); return; } } catch (e) {}
+            try {
+                if (window.top === window && history.length > 1) { history.back(); return; }
+            } catch (e) {}
             try { window.close(); } catch (e) {}
         }
         (function () {
+            // 백버튼 가로채기는 최상위 문서에서만. iframe 에서 걸면 상위가 이탈한다.
             try {
+                if (window.top !== window) return;
                 history.pushState({ ermon: 1 }, '', location.href);
                 window.addEventListener('popstate', function () {
                     ermonBackToSelect();
@@ -2951,7 +3054,17 @@ COMPARE_WINDOW_HTML = '''
             if (fallbackMode) {
                 isRefreshing = true;
                 try { await fallbackRefresh(); }
-                catch (e) { console.error('직접조회 실패:', e); }
+                catch (e) {
+                    // 실패를 조용히 삼키면 '작동 안 함' 으로만 보인다. 배너에 사유 표시.
+                    console.error('직접조회 실패:', e);
+                    try {
+                        const bar = document.getElementById('reconBar');
+                        if (bar) {
+                            bar.style.display = 'block';
+                            bar.textContent = ' 직접조회 실패 — ' + ((e && e.message) || e);
+                        }
+                    } catch (e2) {}
+                }
                 isRefreshing = false;
                 startAutoRefresh();
                 return;
@@ -3292,9 +3405,21 @@ def autostart():
     return redirect('/')
 
 
+def _inject_live_engine(page_html):
+    """선택화면에 직접조회 폴백 엔진(EX)을 상시 탑재.
+    서버가 죽어도 브라우저가 공공API를 직접 호출해 계속 동작한다."""
+    try:
+        if '/*EX-ENGINE-START*/' in page_html:
+            return page_html
+        return page_html.replace('</body>', _live_engine_script([]) + '</body>', 1)
+    except Exception as _ie:
+        _log(f'[live] 폴백 엔진 주입 실패 (무시): {_ie}', 'ERROR')
+        return page_html
+
+
 @flask_app.route('/')
 def index():
-    return _render_cached(HTML, districts=DISTRICTS)
+    return _inject_live_engine(_render_cached(HTML, districts=DISTRICTS))
 
 # ── 지역 병원목록 서버 캐시 (30분) ─────────────────────────────
 _REGION_CACHE = {}
@@ -3489,6 +3614,31 @@ def _fetch_sido_list(sido):
             if q != sido:
                 _ns_dbg(' %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(rows)))
             return rows
+    # ── Q0(시/도) 필터가 해당 시/도에서 0건만 반환하는 API 결함 대응 ──
+    #   별칭까지 실패하면 Q1(시/군/구) 단위로 나눠 조회해 합집합을 만든다.
+    gus = DISTRICTS.get(sido) or []
+    if not gus:
+        return []
+    merged, seen = [], set()
+    for q in [sido] + _SIDO_ALIAS.get(sido, []):
+        for gu in gus:
+            try:
+                got, _t = _list_rows_stream(
+                    _http_get(LIST_API_URL, params={
+                        'serviceKey': SERVICE_KEY, 'Q0': q, 'Q1': gu,
+                        'pageNo': '1', 'numOfRows': '200'},
+                        timeout=12), sido, 'list %s/%s' % (q, gu))
+            except Exception as _ge:
+                _ns_dbg(' %s/%s: 구단위 조회 실패 %s' % (sido, gu, _ge))
+                continue
+            for r in got:
+                if r['hpid'] not in seen:
+                    seen.add(r['hpid'])
+                    merged.append(r)
+        if merged:
+            _ns_dbg(' %s: 구단위 재조회로 %d건 복구 (Q0="%s")' % (sido, len(merged), q))
+            return merged
+    _ns_dbg(' %s: 시/도·별칭·구단위 모두 0건' % sido)
     return []
 
 
@@ -3596,11 +3746,14 @@ def get_hospitals():
     if not rows:
         src = 'live'
         try:
-            params = {'serviceKey': SERVICE_KEY, 'Q0': sido, 'pageNo': '1', 'numOfRows': '300'}
-            if gugun:
-                params['Q1'] = gugun
-            rows, _tc = _list_rows_stream(
-                _http_get(LIST_API_URL, params=params, timeout=12), sido, 'region')
+            # 공공API 는 일부 시/도명(예: 광주광역시, 전라남도)에 0건을 반환한다.
+            # 별칭 재시도 + 페이징이 내장된 _fetch_sido_list 를 사용해 복구한다.
+            rows = _fetch_sido_list(sido)
+            if not rows and gugun:
+                params = {'serviceKey': SERVICE_KEY, 'Q0': sido, 'Q1': gugun,
+                          'pageNo': '1', 'numOfRows': '300'}
+                rows, _tc = _list_rows_stream(
+                    _http_get(LIST_API_URL, params=params, timeout=12), sido, 'region')
             if gugun:
                 rows = [h for h in rows if h['gugun'] == gugun or gugun in (h['dutyAddr'] or '')]
         except Exception as e:
@@ -5457,7 +5610,7 @@ def compare():
                     print(f"병렬 메시지 조회 실패 ({_hp}): {_fe}")
                     msgs[_hp] = ' 정상'
             for h in hospitals_data:
-                h['exception'] = msgs.get(h.get('hpid'), ' 정상')
+                h['exception'] = msgs.get(h.get('hpid'), '정상')
             _log(f'[compare] 예외상황 메시지 수신 완료')
         except Exception as msg_err:
             _log(f'[compare] 예외상황 조회 실패 (무시): {msg_err}', 'ERROR')
@@ -5615,7 +5768,7 @@ def parse_hospital_data(item):
             'hv41': {'avail': safe_int(item.findtext('hv41')), 'total': get_hvs(item, 'HVS25')},
         },
         'equipment': equipment,
-        'exception': ' 정상',
+        'exception': '정상',
     }
 
 def should_show_row(hospitals_data, category, key):
@@ -5778,11 +5931,13 @@ def generate_comparison_html(hospitals_data):
             html += '</tr>'
 
     # ── 예외상황 (이슈5, 이슈6, 이슈7 반영) ─────────────────────────
-    html += f'<tr><td colspan="{num_hospitals+1}" class="category-header">예외상황</td></tr>'
+    html += (f'<tr><td colspan="{num_hospitals+1}" '
+             f'class="category-header cat-exception">예외상황</td></tr>')
     html += '<tr><td class="item-label">예외상황</td>'
     for h in hospitals_data:
-        exc = h.get('exception', '정보 없음')
-        if exc.startswith(''):
+        exc = (h.get('exception') or '정보 없음')
+        # 센티넬(구 '✅ 정상')이 이모지 제거로 소실 → 의미 기반 판정으로 교체
+        if exc.strip() in ('', '정상', '정보 없음'):
             duty_inf_raw = (h.get('duty_inf') or '').strip()
             if duty_inf_raw:
                 duty_lines = [s.strip() for s in duty_inf_raw.replace('，',',').split(',') if s.strip()]
@@ -5954,12 +6109,12 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
+        <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
+                onclick="ermonBackToSelect()">← 병원 선택</button>
         <div class="hdr-row">
             <h1><span class="h1-main">응급의료상황판</span></h1>
             <div class="hdr-right">
                 <span class="h1-sub">(<span id="queryTime">--:--:--</span>기준)</span>
-                <button class="back-sel" id="backSelBtn" title="병원 선택 화면으로"
-                        onclick="ermonBackToSelect()">← 병원 선택</button>
             </div>
         </div>
         <div class="refresh-controls">
@@ -5983,17 +6138,31 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
         <script>
         // 병원 선택 화면 복귀 + 안드로이드 백버튼 가로채기(앱 종료 방지)
         function ermonBackToSelect() {
+            // 저장본에서는 이 화면이 상위 문서의 iframe(srcdoc) 안에 있다.
+            // history.back() 을 쓰면 최상위 문서가 원본 content:// 로 되돌아가
+            // 권한 만료로 ERR_FILE_NOT_FOUND 가 난다. 오버레이만 닫는다.
+            try {
+                if (window.parent && window.parent !== window
+                    && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
+                    window.parent.EXAPP.closeCompare();
+                    return;
+                }
+            } catch (e) {}
             try {
                 if (location.protocol === 'http:' || location.protocol === 'https:') {
                     location.href = '/';
                     return;
                 }
             } catch (e) {}
-            try { if (history.length >1) { history.back(); return; } } catch (e) {}
+            try {
+                if (window.top === window && history.length > 1) { history.back(); return; }
+            } catch (e) {}
             try { window.close(); } catch (e) {}
         }
         (function () {
+            // 백버튼 가로채기는 최상위 문서에서만. iframe 에서 걸면 상위가 이탈한다.
             try {
+                if (window.top !== window) return;
                 history.pushState({ ermon: 1 }, '', location.href);
                 window.addEventListener('popstate', function () {
                     ermonBackToSelect();
@@ -6265,7 +6434,7 @@ var EX = (function () {
                 'hv41': bedPair(item, 'hv41', 'HVS25')
             },
             'equipment': equipment,
-            'exception': ' 정상'
+            'exception': '정상'
         };
     }
     function hospitalLevel(emcls, name) {
@@ -6597,8 +6766,10 @@ var EX = (function () {
         html += '<tr><td colspan="' + (n + 1) + '" class="category-header">예외상황</td></tr>';
         html += '<tr><td class="item-label">예외상황</td>';
         hd.forEach(function (h) {
-            var exc = h.exception === undefined ? '정보 없음' : h.exception;
-            if (exc.indexOf('') === 0) {
+            var exc = (h.exception === undefined || h.exception === null)
+                ? '정보 없음' : String(h.exception);
+            var excT = exc.trim();
+            if (excT === '' || excT === '정상' || excT === '정보 없음') {
                 var dutyRaw = (h.duty_inf || '').trim();
                 if (dutyRaw) {
                     var dl = dutyRaw.replace(/，/g, ',').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
@@ -6884,8 +7055,14 @@ var EX = (function () {
                 items(doc).forEach(function (it) {
                     var hp = (txt(it, 'hpid') || '').trim();
                     if (!hp) return;
+                    var yn = function (t) {
+                        return ((txt(it, t) || 'N') + '').trim().toUpperCase().charAt(0) === 'Y';
+                    };
                     m[hp] = { er: bedObj(sumBeds(it, ER_TAGS)), ward: bedObj(sumBeds(it, WARD_TAGS)),
                               icu: bedObj(sumBeds(it, ICU_TAGS)),
+                              // 자원검색용 장비 보유 플래그 (서버판 /api/beds 와 동일 규격)
+                              eq: { crrt: yn('hvcrrtayn'), ecmo: yn('hvecmoayn'),
+                                    ttm: yn('hvhypoayn'),  hbo: yn('hvoxyayn') },
                               tel3: (txt(it, 'dutyTel3') || '').trim(),
                               upd: (txt(it, 'hvidate') || '').trim() };
                 });
@@ -7843,6 +8020,8 @@ def _build_full_export(auto_entries, iv_ms):
         "const data = await EXAPP.getHospitals(sido, gugun || '');")
     sel = _export_cut(sel, 'ALL',
         "const d = await EXAPP.getAllHospitals(false);")
+    sel = _export_cut(sel, 'ALL2',
+        "const dAll = await EXAPP.getAllHospitals(false);")
     sel = _export_cut(sel, 'SAT',
         "const sd = await EXAPP.getBedSaturation(force);")
     sel = _export_cut(sel, 'BEDS',
@@ -7855,8 +8034,13 @@ def _build_full_export(auto_entries, iv_ms):
     sel = _export_cut(sel, 'RECON2',  "")
 
     # 저장본 내부의 저장 버튼은 제거
-    sel = sel.replace('\n <button class="btn" id="saveAppBtn" style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">저장 (단독 HTML — 선택+조회)</button>', '')
-    sel = sel.replace("\n        try { document.getElementById('saveAppBtn').onclick = () => { location.href = '/export'; }; } catch(e) {}", '')
+    _btn_html = ('        <button class="btn" id="saveAppBtn" '
+                 'style="margin-top:8px;background:linear-gradient(135deg,#556b8d,#3a4d6b);">'
+                 '저장 (단독 HTML — 선택+조회)</button>\n')
+    assert sel.count(_btn_html) == 1, 'export: 저장 버튼 마커 불일치'
+    sel = sel.replace(_btn_html, '')
+    sel = sel.replace(
+        "\n        try { document.getElementById('saveAppBtn').onclick = saveStandaloneHtml; } catch(e) {}", '')
 
     # ③ 부모 글루 (엔진 + 비교문서 빌더 + 오버레이 iframe + 제목 릴레이)
     engine_js = _export_engine_js({'entries': [], 'serviceKey': SERVICE_KEY, 'iv': 0})
@@ -7894,8 +8078,9 @@ def _build_full_export(auto_entries, iv_ms):
         "        overlay = document.createElement('div');\n"
         "        overlay.style.cssText = 'position:fixed;inset:0;z-index:99998;background:#f5f7fa;';\n"
         "        const back = document.createElement('button');\n"
-        "        back.textContent = '↩ 병원선택';\n"
-        "        back.style.cssText = 'position:fixed;top:6px;left:6px;z-index:99999;padding:6px 12px;border:none;border-radius:14px;background:rgba(30,30,30,0.75);color:#fff;font-size:0.8rem;cursor:pointer;';\n"
+        "        back.textContent = '← 병원 선택';\n"
+        # 앱(.back-sel)과 동일한 모양: 좌상단 밀착, 각진 형태, 연회색, 최소 여백
+        "        back.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;padding:1px 4px;border:1px solid #dfe3e8;border-radius:0;background:#eef0f3;color:#7b8492;font-size:0.58rem;font-weight:600;line-height:1.15;cursor:pointer;';\n"
         ' back.onclick = closeCompare;\n'
         "        const fr = document.createElement('iframe');\n"
         "        fr.style.cssText = 'width:100%;height:100%;border:none;display:block;';\n"
