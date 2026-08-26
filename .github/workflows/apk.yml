@@ -609,7 +609,7 @@ jobs:
           # 아이콘/프리스플래시 (없으면 워크플로가 자동 생성)
           icon.filename = %(source.dir)s/icon.png
           presplash.filename = %(source.dir)s/presplash.png
-          android.presplash_color = #11161D
+          android.presplash_color = #0E131B
 
           p4a.bootstrap = sdl2
           # 워크플로가 절대경로로 치환한다 (매니페스트 패치본 사용)
@@ -787,21 +787,32 @@ jobs:
             python3 - <<'__EMB_MKICONS_PY__' || true
           #!/usr/bin/env python3
           # icon.png (512) / presplash.png (1024)
-          # 모티프: 단순화 앰뷸런스(측면 실루엣) + 단순화 조회 목록(행/막대)
-          # 금지: 심전도 파형, 십자가, 원색
+          # 구성: 상황판(패널) + 심전도 + 병상 행(침상 글리프 + 가용 바) + 앰뷸런스
+          # 색상: 저채도 다색 (틸 / 앰버 / 로즈 / 인디고 / 스틸) — 순수 원색 없음
+          import math
           import os
 
           from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-          BG_TOP = (17, 22, 29)
-          BG_BOT = (31, 40, 51)
-          BODY = (222, 228, 236)     # 차체 (오프화이트)
-          BODY_D = (163, 173, 187)
-          SAND = (198, 173, 134)     # 저채도 악센트 스트라이프
-          SLATE = (108, 122, 140)
-          ROW_BG = (52, 64, 79)
-          TEXT = (228, 233, 240)
-          FOG = (146, 159, 175)
+          BG_TOP = (14, 19, 27)        # #0E131B
+          BG_BOT = (30, 41, 56)        # #1E2938
+          PANEL = (25, 34, 46)
+          PANEL_LN = (63, 79, 100)
+          HEADER = (92, 104, 148)      # 뮤트 인디고
+          BODY = (231, 237, 244)
+          BODY_D = (166, 179, 195)
+          GLASS = (124, 138, 170)      # 뮤트 바이올렛블루
+          CROSS = (185, 124, 122)      # 뮤트 로즈
+          BEACON = (206, 176, 120)     # 뮤트 앰버
+          MINT = (127, 178, 166)       # 뮤트 민트 (가용)
+          AMBER = (200, 170, 118)      # 뮤트 앰버 (주의)
+          ROSE = (185, 124, 122)       # 뮤트 로즈 (포화)
+          STEEL = (150, 166, 186)      # 침상
+          TRACK = (47, 60, 76)
+          TIRE = (21, 28, 38)
+          FOG = (146, 160, 178)
+          TEXT = (233, 239, 246)
+          SUP = 4
 
 
           def font(px, bold=True):
@@ -824,80 +835,130 @@ jobs:
                          fill=tuple(int(a + (b - a) * t) for a, b in zip(c0, c1)))
 
 
-          def ambulance(img, x, y, w, sup=4):
-              """측면 실루엣. 캡(경사) + 박스 + 스트라이프 + 바퀴. 십자 마킹 없음."""
-              S = img.size[0] * sup
-              lay = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-              d = ImageDraw.Draw(lay)
-              X, Y, W = x * sup, y * sup, w * sup
-              H = W * 0.46
-              r = W * 0.045
+          def glow(img, cx, cy, r, color, a=32):
+              g = Image.new('RGBA', img.size, (0, 0, 0, 0))
+              ImageDraw.Draw(g).ellipse([cx - r, cy - r, cx + r, cy + r], fill=color + (a,))
+              img.alpha_composite(g.filter(ImageFilter.GaussianBlur(r * 0.45)))
 
-              # 화물칸(박스)
-              bx0, bx1 = X + W * 0.30, X + W
-              d.rounded_rectangle([bx0, Y, bx1, Y + H], radius=r, fill=BODY + (255,))
-              # 캡(앞부분 경사)
-              d.polygon([(X, Y + H), (X, Y + H * 0.52), (X + W * 0.14, Y + H * 0.20),
-                         (X + W * 0.34, Y + H * 0.20), (X + W * 0.34, Y + H)],
+
+          def _layer(img):
+              S = img.size[0] * SUP
+              lay = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              return lay, ImageDraw.Draw(lay)
+
+
+          def ambulance(img, x, y, w):
+              lay, d = _layer(img)
+              X, Y, W = x * SUP, y * SUP, w * SUP
+              H = W * 0.46
+              r = W * 0.075
+              d.rounded_rectangle([X + W * 0.30, Y, X + W, Y + H], radius=r, fill=BODY + (255,))
+              d.polygon([(X, Y + H), (X, Y + H * 0.50), (X + W * 0.145, Y + H * 0.16),
+                         (X + W * 0.345, Y + H * 0.16), (X + W * 0.345, Y + H)],
                         fill=BODY + (255,))
-              # 창문
-              d.polygon([(X + W * 0.055, Y + H * 0.52), (X + W * 0.165, Y + H * 0.27),
-                         (X + W * 0.30, Y + H * 0.27), (X + W * 0.30, Y + H * 0.52)],
-                        fill=SLATE + (255,))
-              # 측면 스트라이프
-              d.rectangle([bx0 + W * 0.03, Y + H * 0.55, bx1 - W * 0.05, Y + H * 0.68],
-                          fill=SAND + (255,))
-              # 지붕 경광등
-              d.rounded_rectangle([X + W * 0.52, Y - H * 0.14, X + W * 0.70, Y],
-                                  radius=r * 0.8, fill=SAND + (255,))
-              # 바퀴
-              for cx in (X + W * 0.24, X + W * 0.78):
-                  rr = W * 0.115
-                  d.ellipse([cx - rr, Y + H - rr * 0.75, cx + rr, Y + H + rr * 1.25],
-                            fill=(24, 30, 38, 255))
-                  d.ellipse([cx - rr * 0.42, Y + H + rr * 0.25 - rr * 0.42,
-                             cx + rr * 0.42, Y + H + rr * 0.25 + rr * 0.42],
+              d.polygon([(X + W * 0.055, Y + H * 0.49), (X + W * 0.170, Y + H * 0.245),
+                         (X + W * 0.300, Y + H * 0.245), (X + W * 0.300, Y + H * 0.49)],
+                        fill=GLASS + (255,))
+              d.rounded_rectangle([X + W * 0.50, Y - H * 0.145, X + W * 0.665, Y],
+                                  radius=r * 0.7, fill=BEACON + (255,))
+              cx, cy = X + W * 0.735, Y + H * 0.46
+              arm, th = W * 0.082, W * 0.033
+              d.rounded_rectangle([cx - th / 2, cy - arm, cx + th / 2, cy + arm],
+                                  radius=th * 0.28, fill=CROSS + (255,))
+              d.rounded_rectangle([cx - arm, cy - th / 2, cx + arm, cy + th / 2],
+                                  radius=th * 0.28, fill=CROSS + (255,))
+              for ratio in (0.245, 0.790):
+                  wx, rr = X + W * ratio, W * 0.098
+                  d.ellipse([wx - rr, Y + H - rr * 0.70, wx + rr, Y + H + rr * 1.30],
+                            fill=TIRE + (255,))
+                  d.ellipse([wx - rr * 0.38, Y + H + rr * 0.30 - rr * 0.38,
+                             wx + rr * 0.38, Y + H + rr * 0.30 + rr * 0.38],
                             fill=BODY_D + (255,))
               img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
 
 
-          def listrows(img, x, y, w, rows=3, sup=4):
-              """단순화 조회 목록: 행 배경 + 라벨 블록 + 가용량 막대."""
-              S = img.size[0] * sup
-              lay = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-              d = ImageDraw.Draw(lay)
-              X, Y, W = x * sup, y * sup, w * sup
-              rh = W * 0.145
-              gap = rh * 0.42
-              fills = (0.78, 0.46, 0.24)
-              for i in range(rows):
-                  top = Y + i * (rh + gap)
-                  d.rounded_rectangle([X, top, X + W, top + rh], radius=rh * 0.22,
-                                      fill=ROW_BG + (255,))
-                  d.rectangle([X + W * 0.035, top + rh * 0.28,
-                               X + W * 0.30, top + rh * 0.72], fill=FOG + (255,))
-                  bx0 = X + W * 0.36
-                  bw = W * 0.60
-                  d.rectangle([bx0, top + rh * 0.30, bx0 + bw, top + rh * 0.70],
-                              fill=(70, 84, 102, 255))
-                  d.rectangle([bx0, top + rh * 0.30, bx0 + bw * fills[i % 3],
-                               top + rh * 0.70], fill=SAND + (255,))
+          def board(img, x, y, w, h):
+              """상황판 — 인디고 헤더 스트립 + 본체."""
+              lay, d = _layer(img)
+              X, Y, W, H = x * SUP, y * SUP, w * SUP, h * SUP
+              r = min(W, H) * 0.10
+              d.rounded_rectangle([X, Y, X + W, Y + H], radius=r, fill=PANEL + (255,))
+              d.rounded_rectangle([X, Y, X + W, Y + H * 0.135], radius=r * 0.6,
+                                  fill=HEADER + (255,))
+              d.rectangle([X, Y + H * 0.075, X + W, Y + H * 0.135], fill=HEADER + (255,))
+              d.rounded_rectangle([X, Y, X + W, Y + H], radius=r,
+                                  outline=PANEL_LN + (255,), width=max(2, int(W * 0.009)))
               img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
 
 
-          def glow(img, cx, cy, r, a=44):
-              g = Image.new('RGBA', img.size, (0, 0, 0, 0))
-              ImageDraw.Draw(g).ellipse([cx - r, cy - r, cx + r, cy + r], fill=SAND + (a,))
-              img.alpha_composite(g.filter(ImageFilter.GaussianBlur(r * 0.45)))
+          def bed_glyph(img, x, y, w, tint):
+              """소형 침상 글리프 — 헤드보드 + 매트리스 + 베개."""
+              lay, d = _layer(img)
+              X, Y, W = x * SUP, y * SUP, w * SUP
+              t = W * 0.30
+              d.rounded_rectangle([X, Y - W * 0.17, X + W * 0.10, Y + t],
+                                  radius=t * 0.30, fill=STEEL + (255,))
+              d.rounded_rectangle([X + W * 0.06, Y, X + W, Y + t],
+                                  radius=t * 0.35, fill=STEEL + (255,))
+              d.rounded_rectangle([X + W * 0.15, Y - t * 0.52, X + W * 0.44, Y + t * 0.10],
+                                  radius=t * 0.35, fill=tint + (255,))
+              img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
+
+
+          def ecg(img, x0, x1, y, amp, width, color, cycles=1.3):
+              lay, d = _layer(img)
+              X0, X1, Y, A, W = x0 * SUP, x1 * SUP, y * SUP, amp * SUP, width * SUP
+              pts, step = [], max(1, int((X1 - X0) / 420))
+              for px in range(int(X0), int(X1) + 1, step):
+                  t = (px - X0) / max(1, X1 - X0)
+                  u = (t * cycles) % 1.0
+                  if   u < 0.34: v = 0.0
+                  elif u < 0.38: v = -0.16
+                  elif u < 0.43: v = 1.0
+                  elif u < 0.47: v = -0.42
+                  elif u < 0.51: v = 0.08
+                  elif u < 0.64: v = 0.0
+                  elif u < 0.74: v = 0.20 * math.sin((u - 0.64) / 0.10 * math.pi)
+                  else:          v = 0.0
+                  pts.append((px, Y - v * A))
+              d.line(pts, fill=color + (255,), width=int(W), joint='curve')
+              img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
+
+
+          def bar(img, x, y, w, h, ratio, color):
+              lay, d = _layer(img)
+              X, Y, W, H = x * SUP, y * SUP, w * SUP, h * SUP
+              d.rounded_rectangle([X, Y, X + W, Y + H], radius=H / 2, fill=TRACK + (255,))
+              d.rounded_rectangle([X, Y, X + W * max(0.06, ratio), Y + H], radius=H / 2,
+                                  fill=color + (255,))
+              img.alpha_composite(lay.resize(img.size, Image.LANCZOS))
+
+
+          def compose(img, S, bx, by, bw, bh, aw, ay, rows=3):
+              board(img, bx, by, bw, bh)
+              ecg(img, bx + bw * 0.085, bx + bw * 0.915, by + bh * 0.335,
+                  bh * 0.145, max(3, S * 0.012), MINT, 1.3)
+              data = [(0.78, MINT), (0.46, AMBER), (0.20, ROSE)][:rows]
+              gx = bx + bw * 0.085
+              gw = bw * 0.190                     # 침상 글리프 폭
+              bar_x = gx + gw + bw * 0.050
+              bar_w = bx + bw * 0.915 - bar_x
+              top = by + bh * 0.520
+              step = bh * 0.163
+              for i, (ratio, col) in enumerate(data):
+                  cy = top + i * step
+                  bed_glyph(img, gx, cy, gw, col)
+                  bar(img, bar_x, cy + gw * 0.055, bar_w, bh * 0.078, ratio, col)
+              ambulance(img, (S - aw) / 2, ay, aw)
 
 
           def make_icon(path, S=512):
               base = Image.new('RGB', (S, S), BG_TOP)
               vgrad(base, BG_TOP, BG_BOT)
               img = base.convert('RGBA')
-              glow(img, int(S * 0.50), int(S * 0.40), int(S * 0.30), 40)
-              ambulance(img, S * 0.195, S * 0.215, S * 0.61)
-              listrows(img, S * 0.205, S * 0.595, S * 0.59, 3)
+              glow(img, int(S * 0.50), int(S * 0.56), int(S * 0.34), MINT, 26)
+              compose(img, S, S * 0.095, S * 0.420, S * 0.810, S * 0.470,
+                      S * 0.545, S * 0.090, rows=3)
               img.convert('RGB').save(path, 'PNG')
               return path
 
@@ -906,19 +967,25 @@ jobs:
               base = Image.new('RGB', (S, S), BG_TOP)
               vgrad(base, BG_TOP, BG_BOT)
               img = base.convert('RGBA')
-              glow(img, int(S * 0.50), int(S * 0.34), int(S * 0.24), 38)
-              ambulance(img, S * 0.290, S * 0.185, S * 0.42)
-              listrows(img, S * 0.305, S * 0.430, S * 0.39, 3)
+              glow(img, int(S * 0.50), int(S * 0.42), int(S * 0.29), MINT, 24)
+              compose(img, S, S * 0.255, S * 0.330, S * 0.490, S * 0.285,
+                      S * 0.330, S * 0.155, rows=3)
+
               d = ImageDraw.Draw(img)
-              f1, f2 = font(int(S * 0.068)), font(int(S * 0.025), bold=False)
+              f1, f2 = font(int(S * 0.060)), font(int(S * 0.022), bold=False)
               t1 = 'E R   M O N I T O R'
               bb = d.textbbox((0, 0), t1, font=f1)
-              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.665)), t1, font=f1, fill=TEXT + (255,))
-              d.line([(S * 0.36, S * 0.765), (S * 0.64, S * 0.765)],
-                     fill=SAND + (200,), width=max(2, int(S * 0.0032)))
-              t2 = 'EMERGENCY  BED  STATUS'
+              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.690)), t1, font=f1, fill=TEXT + (255,))
+              d.line([(S * 0.362, S * 0.782), (S * 0.638, S * 0.782)],
+                     fill=MINT + (170,), width=max(2, int(S * 0.003)))
+              t2 = 'REAL-TIME  BED  AVAILABILITY'
               bb = d.textbbox((0, 0), t2, font=f2)
-              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.795)), t2, font=f2, fill=FOG + (255,))
+              d.text(((S - bb[2] + bb[0]) / 2, int(S * 0.806)), t2, font=f2, fill=FOG + (255,))
+
+              bx, bw, by, bh = S * 0.362, S * 0.276, S * 0.884, S * 0.007
+              d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=bh / 2, fill=TRACK + (255,))
+              d.rounded_rectangle([bx, by, bx + bw * 0.42, by + bh], radius=bh / 2,
+                                  fill=MINT + (255,))
               img.convert('RGB').save(path, 'PNG')
               return path
 
