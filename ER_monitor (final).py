@@ -1380,15 +1380,17 @@ HTML = '''
         // 검색 결과에 자원 조건을 반영 (검색 버튼 경로에서만 호출)
         async function resFilterAfterSearch(list, t0) {
             var info = resInfoEl();
-            if (!resActive()) {
-                info.textContent = '';
-                displayHospitals(list, t0 ? Date.now() - t0 : undefined);
-                return;
-            }
             var sidos = [];
             list.forEach(function (h) {
                 if (h.sido && sidos.indexOf(h.sido) < 0) sidos.push(h.sido);
             });
+            if (!resActive()) {
+                info.textContent = '';
+                displayHospitals(list, t0 ? Date.now() - t0 : undefined);
+                // 병상 표시는 자원조건과 무관하게 필요 → 비동기로 채운다
+                try { ensureBeds(sidos); } catch (e) {}
+                return;
+            }
             info.textContent = '장비 정보 조회 중... (' + sidos.length + '개 시/도)';
             try { await ensureBeds(sidos, 20); } catch (e) {}
             var unknown = list.filter(function (h) { return !resEqOf(h); }).length;
@@ -1599,6 +1601,18 @@ HTML = '''
         // ══════════════════════════════════════════════════════════════
         function dtClose() { var o = document.getElementById('dtOverlay'); if (o) o.remove(); }
         function kv(k, v) { return '<div class="dt-kv"><span>' + k + '</span><span>' + esc(v || '-') + '</span></div>'; }
+        // 실시간 메시지 행 — 좌측열=분류(색상), 본문=같은 색, [진료과목]만 검정
+        function kvMsg(m) {
+            var col = m.color || '#333';
+            var raw = String(m.msg || '-');
+            var mm = /^\\[([^\\]]*)\\]\\s*([\\s\\S]*)$/.exec(raw);
+            var body = mm
+                ? ('<span style="color:#000;">[' + esc(mm[1]) + ']</span> ' + esc(mm[2]))
+                : esc(raw);
+            return '<div class="dt-kv"><span style="color:' + col + ';font-weight:700;">'
+                 + esc(m.label || '-') + '</span><span style="color:' + col + ';">'
+                 + body + '</span></div>';
+        }
         function cellRows(obj, labels) {
             var out = '';
             Object.keys(labels).forEach(function (k) {
@@ -1673,7 +1687,7 @@ HTML = '''
                       }).join('') + '</div></div>'
                     + (msgs.length
                         ? '<div class="dt-sec"><h4>실시간 메시지 (' + msgs.length + ')</h4>'
-                          + msgs.map(function (m) { return kv(m.label || '-', m.msg || '-'); }).join('') + '</div>'
+                          + msgs.map(function (m) { return kvMsg(m); }).join('') + '</div>'
                         : '<div class="dt-sec"><h4>실시간 메시지</h4>'
                           + '<div class="dt-kv"><span>-</span><span>등록된 메시지 없음</span></div></div>')
                     + '<div class="dt-sec"><h4>갱신</h4>' + kv('병상 갱신시각', x.update_time) + '</div>';
@@ -3882,16 +3896,26 @@ def api_hospital_detail():
             r = r[1]
         if isinstance(r, str):
             for ln in [x.strip() for x in r.split('\n') if x.strip()]:
-                if ln.startswith('\u2705'):
+                # 예외 없음 센티넬은 메시지로 표시하지 않는다
+                if ln in ('정상', '정보 없음'):
                     continue
-                msgs.append({'label': '\uc218\uc6a9\ubd88\uac00', 'msg': ln})
+                # '[분류] [진료과목] 본문' → 좌측열=분류, 본문=[진료과목] 본문
+                cat_, dept_, body_ = _split_msg_line(ln)
+                lbl_, col_ = EXC_STYLE.get(cat_, (cat_ or '-', '#333'))
+                msgs.append({'label': lbl_, 'color': col_, 'cat': cat_,
+                             'dept': dept_,
+                             'msg': (f'[{dept_}] {body_}' if dept_ else body_)})
         elif isinstance(r, (list, tuple)):
             for x in r:
                 if isinstance(x, dict):
                     msgs.append({'label': x.get('label') or x.get('type') or '-',
                                  'msg': x.get('msg') or x.get('message') or str(x)})
                 else:
-                    msgs.append({'label': '\uc218\uc6a9\ubd88\uac00', 'msg': str(x)})
+                    _c, _d, _b = _split_msg_line(str(x))
+                    _l, _col = EXC_STYLE.get(_c, (_c or '-', '#333'))
+                    msgs.append({'label': _l, 'color': _col, 'cat': _c,
+                                 'dept': _d,
+                                 'msg': (f'[{_d}] {_b}' if _d else _b)})
     except Exception as me:
         _ns_dbg('detail msgs %s FAIL %s' % (hpid, me))
     _ns_dbg('detail %s msgs=%d' % (hpid, len(msgs)))
@@ -4098,35 +4122,36 @@ D_CODE_MAP = {
 #  중증질환 수용가능 키오스크 코드 → 항목명 매핑 (getSrsillDissAceptncPosblInfoInqire)
 # ══════════════════════════════════════════════════════════════════
 MKIOSK_MAP = {
-    # 공식 매핑: Ty1=응급실, Ty2~Ty28 = 중증응급질환 27종 (메시지 API Y코드와 동일 순서)
-    'MKioskTy1': '응급실 수용',
-    'MKioskTy2': '[재관류중재술] 심근경색',
-    'MKioskTy3': '[재관류중재술] 뇌경색',
-    'MKioskTy4': '[뇌출혈수술] 거미막하출혈',
-    'MKioskTy5': '[뇌출혈수술] 거미막하출혈 외',
-    'MKioskTy6': '[대동맥응급] 흉부',
-    'MKioskTy7': '[대동맥응급] 복부',
-    'MKioskTy8': '[담낭담관질환] 담낭질환',
-    'MKioskTy9': '[담낭담관질환] 담도포함질환',
-    'MKioskTy10': '[복부응급수술] 비외상',
-    'MKioskTy11': '[장중첩/폐색] 영유아',
-    'MKioskTy12': '[응급내시경] 성인 위장관',
-    'MKioskTy13': '[응급내시경] 영유아 위장관',
-    'MKioskTy14': '[응급내시경] 성인 기관지',
-    'MKioskTy15': '[응급내시경] 영유아 기관지',
-    'MKioskTy16': '[저출생체중아] 집중치료',
-    'MKioskTy17': '[산부인과응급] 분만',
-    'MKioskTy18': '[산부인과응급] 산과수술',
-    'MKioskTy19': '[산부인과응급] 부인과수술',
-    'MKioskTy20': '[중증화상] 전문치료',
-    'MKioskTy21': '[사지접합] 수족지접합',
-    'MKioskTy22': '[사지접합] 수족지접합 외',
-    'MKioskTy23': '[응급투석] HD',
-    'MKioskTy24': '[응급투석] CRRT',
-    'MKioskTy25': '[정신과적응급] 폐쇄병동입원',
-    'MKioskTy26': '[안과적수술] 응급',
-    'MKioskTy27': '[영상의학혈관중재] 성인',
-    'MKioskTy28': '[영상의학혈관중재] 영유아'
+    # 공식 매핑(NIA OpenAPI 활용가이드 V4, 2025-02-26 / 실측 확인):
+    #   Ty1~Ty27 = 중증응급질환 27종, Ty28 = 응급실
+    'MKioskTy1': '[재관류중재술] 심근경색',
+    'MKioskTy2': '[재관류중재술] 뇌경색',
+    'MKioskTy3': '[뇌출혈수술] 거미막하출혈',
+    'MKioskTy4': '[뇌출혈수술] 거미막하출혈 외',
+    'MKioskTy5': '[대동맥응급] 흉부',
+    'MKioskTy6': '[대동맥응급] 복부',
+    'MKioskTy7': '[담낭담관질환] 담낭질환',
+    'MKioskTy8': '[담낭담관질환] 담도포함질환',
+    'MKioskTy9': '[복부응급수술] 비외상',
+    'MKioskTy10': '[장중첩/폐색] 영유아',
+    'MKioskTy11': '[응급내시경] 성인 위장관',
+    'MKioskTy12': '[응급내시경] 영유아 위장관',
+    'MKioskTy13': '[응급내시경] 성인 기관지',
+    'MKioskTy14': '[응급내시경] 영유아 기관지',
+    'MKioskTy15': '[저체중출생아] 집중치료',
+    'MKioskTy16': '[산부인과응급] 분만',
+    'MKioskTy17': '[산부인과응급] 산과수술',
+    'MKioskTy18': '[산부인과응급] 부인과수술',
+    'MKioskTy19': '[중증화상] 전문치료',
+    'MKioskTy20': '[사지접합] 수족지접합',
+    'MKioskTy21': '[사지접합] 수족지접합 외',
+    'MKioskTy22': '[응급투석] HD',
+    'MKioskTy23': '[응급투석] CRRT',
+    'MKioskTy24': '[정신과적응급] 폐쇄병동입원',
+    'MKioskTy25': '[안과적수술] 응급',
+    'MKioskTy26': '[영상의학혈관중재] 성인',
+    'MKioskTy27': '[영상의학혈관중재] 영유아',
+    'MKioskTy28': '응급실 수용'
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -4167,6 +4192,24 @@ Y_CODE_MAP = {
 #  예외상황 메시지 처리
 # ══════════════════════════════════════════════════════════════════
 
+# 예외상황 분류 → (표시라벨, 색상). 조회화면·자세히 팝업 공통 사용
+EXC_STYLE = {
+    '수용불가': ('[수용 불가능]', '#dc3545'),
+    '수용가능': ('[ 수용 가능 ]', '#28a745'),
+    '문의필요': ('[ 문의 필요 ]', '#e67e00'),
+}
+
+
+def _dept_black(text):
+    """'[진료과목] 본문' 에서 앞의 [ ] 부분만 검정으로 표시."""
+    m = _re_msg.match(text or '')
+    if not m:
+        return _html_escape(text or '')
+    return ('<span style="color:#000;">[%s]</span> %s'
+            % (_html_escape((m.group(1) or '').strip()),
+               _html_escape((m.group(2) or '').strip())))
+
+
 def _categorize_exception(label, msg):
     """메시지를 카테고리로 분류: 수용불가 / 수용가능 / 문의필요"""
     full = f"{label} {msg}".strip()
@@ -4204,6 +4247,10 @@ def _resolve_type_label(sym_typ_cod_mag, sym_typ_cod):
     return label
 
 
+_re_msg = __import__('re').compile(r'^\[([^\]]*)\]\s*(.*)$', __import__('re').S)
+_html_escape = __import__('html').escape
+
+
 def _clean_msg(sym_blk_msg):
     """symBlkMsg에서 [응급] 접두사 제거 (이슈7)"""
     msg = (sym_blk_msg or '').strip()
@@ -4212,6 +4259,20 @@ def _clean_msg(sym_blk_msg):
             msg = msg[len(prefix):].strip()
             break
     return msg
+
+
+def _split_msg_line(ln):
+    """'[수용불가] [성형외과] 본문' → ('수용불가', '성형외과', '본문').
+    형식이 다르면 가능한 만큼만 분해한다."""
+    m1 = _re_msg.match(ln or '')
+    if not m1:
+        return '', '', (ln or '').strip()
+    cat = (m1.group(1) or '').strip()
+    rest = (m1.group(2) or '').strip()
+    m2 = _re_msg.match(rest)
+    if m2:
+        return cat, (m2.group(1) or '').strip(), (m2.group(2) or '').strip()
+    return cat, '', rest
 
 
 def _fetch_one_hospital_msgs(hpid):
@@ -4246,13 +4307,16 @@ def _fetch_one_hospital_msgs(hpid):
                 sym_typ_cod     = (item.findtext('symTypCod') or '').strip()
                 sym_blk_msg_typ = (item.findtext('symBlkMsgTyp') or '').strip()
                 sym_out_dsp_yon = (item.findtext('symOutDspYon') or '').strip()
+                # 명세 미기재이나 실제 응답에 존재하는 진료과목 필드 (실측 확인)
+                trt_prt_cod_mag = (item.findtext('trtPrtCodMag') or '').strip()
 
                 # 모든 태그 덤프 (디버그)
                 all_tags = {child.tag: (child.text or '') for child in item}
                 print(f"[MSG_RAW] {hpid} p{page} | "
                       f"symTypCod={sym_typ_cod!r} symTypCodMag={sym_typ_cod_mag!r} "
                       f"symBlkMsg={sym_blk_msg!r} msgTyp={sym_blk_msg_typ!r} "
-                      f"DspYon={sym_out_dsp_yon!r} | all_tags={all_tags}")
+                      f"DspYon={sym_out_dsp_yon!r} trtPrt={trt_prt_cod_mag!r} "
+                      f"| all_tags={all_tags}")
 
                 # Y/D 코드 → 한국어명 변환
                 label = _resolve_type_label(sym_typ_cod_mag, sym_typ_cod)
@@ -4261,21 +4325,26 @@ def _fetch_one_hospital_msgs(hpid):
 
                 print(f"[MSG_PROC] label_raw={label!r} clean_msg={clean_msg!r}")
 
-                # 응급실 타입이면 라벨 숨김 (이슈7)
-                if label in ('응급실', ''):
-                    label = ''
+                # ── 표기 라벨 결정 ─────────────────────────────
+                #  1순위 진료과목(trtPrtCodMag)  예: 성형외과
+                #  2순위 중증질환명/응급실(symTypCodMag→label)
+                #  둘 다 없으면 '응급실'
+                #  (진료과목이 있으면 '응급실' 과 중복 표기하지 않는다)
+                dept = trt_prt_cod_mag or label or '응급실'
 
-                if not clean_msg and not label:
+                if not clean_msg and not dept:
                     print(f"[MSG_PROC] ->SKIPPED (both empty)")
                     continue
 
-                # 최종 content 구성
-                if label and clean_msg:
-                    content = f"{label}: {clean_msg}"
-                elif clean_msg:
+                # 최종 content 구성 — [진료과목] 접두.
+                #  본문이 이미 '[..]' 로 시작하면 과목 표기가 중복되므로
+                #  접두를 붙이지 않고 본문의 대괄호 하나만 남긴다.
+                if not clean_msg:
+                    content = f"[{dept}]"
+                elif clean_msg.startswith('['):
                     content = clean_msg
                 else:
-                    content = label
+                    content = f"[{dept}] {clean_msg}"
 
                 cat = _categorize_exception(label, clean_msg)
                 exception_msgs.append(f"[{cat}] {content}")
@@ -4762,7 +4831,9 @@ def _fetch_bed_line(hpid, sido, gugun, name_hint=''):
             if (item.findtext('hpid') or '').strip() != hpid:
                 continue
             name  = (item.findtext('dutyName') or '').strip() or name_hint or hpid
-            avail = safe_int(item.findtext('hvec'))
+            _raw_avail = item.findtext('hvec')
+            _has_avail = _raw_avail is not None and str(_raw_avail).strip() != ''
+            avail = safe_int(_raw_avail)
             t_raw = get_hvs(item, 'HVS01')
             prev  = _pip_bed_total_cache.get(hpid, {})
             if t_raw >0:
@@ -4771,7 +4842,9 @@ def _fetch_bed_line(hpid, sido, gugun, name_hint=''):
             else:
                 total = prev.get('hvec_t', 0)
             _pip_bed_total_cache[hpid] = prev
-            if avail < 0:
+            # 음수는 과밀(정원 초과)을 뜻하는 실제 값이므로 그대로 표기한다.
+            # 태그 자체가 비었을 때만 '정보없음'.
+            if not _has_avail:
                 return f'{name} 정보없음'
             if total >0:
                 pct = round(avail / total * 100)
@@ -4949,12 +5022,13 @@ def _lines_from_compare_cache(hospitals, max_age):
                 all_ok = False
                 continue
             name = ce.get('name') or h.get('name') or h['hpid']
-            avail = ce.get('hvec', -1)
-            avail = -1 if avail is None else avail
+            avail = ce.get('hvec', None)
             total = ce.get('hvec_t', 0) or 0
-            if avail < 0:
+            # 캐시에 값이 없을 때만 '정보없음' (음수는 과밀 실측값)
+            if avail is None:
                 out[h['hpid']] = f'{name} 정보없음'
-            elif total >0:
+                continue
+            if total >0:
                 pct = round(avail / total * 100)
                 out[h['hpid']] = f'{name} {avail}/{total}({pct}%)'
             else:
@@ -5092,7 +5166,9 @@ def _fetch_bed_lines(hospitals):
             if item is None:
                 continue
             name  = (item.findtext('dutyName') or '').strip() or h.get('name') or h['hpid']
-            avail = safe_int(item.findtext('hvec'))
+            _raw_a = item.findtext('hvec')
+            _has_a = _raw_a is not None and str(_raw_a).strip() != ''
+            avail = safe_int(_raw_a)
             t_raw = get_hvs(item, 'HVS01')
             prev  = _pip_bed_total_cache.get(h['hpid'], {})
             if t_raw >0:
@@ -5101,7 +5177,8 @@ def _fetch_bed_lines(hospitals):
             else:
                 total = prev.get('hvec_t', 0)
             _pip_bed_total_cache[h['hpid']] = prev
-            if avail < 0:
+            # 음수 = 과밀(정원 초과) 실제 값. 결측일 때만 '정보없음'.
+            if not _has_a:
                 out[h['hpid']] = f'{name} 정보없음'
             elif total >0:
                 pct = round(avail / total * 100)
@@ -5969,23 +6046,26 @@ def generate_comparison_html(hospitals_data):
             duty_inf_raw = (h.get('duty_inf') or '').strip()
             duty_inf_lines = [s.strip() for s in duty_inf_raw.replace('，',',').split(',') if s.strip()] if duty_inf_raw else []
 
+            # 그룹 제목: 같은 색 밑줄 / 그룹 사이 1줄 공백 / [진료과목]만 검정
             result = []
-            if un_lines:
-                result.append('<div style="color:#dc3545;font-weight:700;margin-left:5px;">수용불가:</div>')
-                for item in un_lines:
-                    result.append(f'<div style="margin-left:10px;color:#dc3545;line-height:1.3;">{item}</div>')
-            if av_lines:
-                result.append('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">수용가능:</div>')
-                for item in av_lines:
-                    result.append(f'<div style="margin-left:10px;color:#28a745;line-height:1.3;">{item}</div>')
-            if inq_lines:
-                result.append('<div style="color:#e67e00;font-weight:700;margin-left:5px;margin-top:5px;">※ 문의 필요:</div>')
-                for item in inq_lines:
-                    result.append(f'<div style="margin-left:10px;color:#e67e00;line-height:1.3;">{item}</div>')
-            if duty_inf_lines:
-                result.append('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">상시 운영 제한:</div>')
-                for item in duty_inf_lines:
-                    result.append(f'<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">{item}</div>')
+
+            def _grp(title, color, lines, dept_black=True):
+                if not lines:
+                    return
+                if result:                       # 첫 그룹 앞에는 공백 없음
+                    result.append('<div style="height:1.3em;"></div>')
+                result.append(
+                    f'<div style="color:{color};font-weight:700;margin-left:5px;'
+                    f'text-decoration:underline;text-decoration-color:{color};">{title}</div>')
+                for item in lines:
+                    body = _dept_black(item) if dept_black else _html_escape(item)
+                    result.append(
+                        f'<div style="margin-left:10px;color:{color};line-height:1.3;">{body}</div>')
+
+            _grp('수용불가:', '#dc3545', un_lines)
+            _grp('수용가능:', '#28a745', av_lines)
+            _grp('※ 문의 필요:', '#e67e00', inq_lines)
+            _grp('상시 운영 제한:', '#5a6a7e', duty_inf_lines, dept_black=False)
 
             exc_fmt = ''.join(result) if result else exc
             html += (f'<td class="exception-cell exception-warning" '
@@ -6243,34 +6323,35 @@ var EX = (function () {
         'D034': '구강악안면외과'
     };
     var MKIOSK_MAP = {
-        'MKioskTy1': '응급실 수용',
-        'MKioskTy2': '[재관류중재술] 심근경색',
-        'MKioskTy3': '[재관류중재술] 뇌경색',
-        'MKioskTy4': '[뇌출혈수술] 거미막하출혈',
-        'MKioskTy5': '[뇌출혈수술] 거미막하출혈 외',
-        'MKioskTy6': '[대동맥응급] 흉부',
-        'MKioskTy7': '[대동맥응급] 복부',
-        'MKioskTy8': '[담낭담관질환] 담낭질환',
-        'MKioskTy9': '[담낭담관질환] 담도포함질환',
-        'MKioskTy10': '[복부응급수술] 비외상',
-        'MKioskTy11': '[장중첩/폐색] 영유아',
-        'MKioskTy12': '[응급내시경] 성인 위장관',
-        'MKioskTy13': '[응급내시경] 영유아 위장관',
-        'MKioskTy14': '[응급내시경] 성인 기관지',
-        'MKioskTy15': '[응급내시경] 영유아 기관지',
-        'MKioskTy16': '[저출생체중아] 집중치료',
-        'MKioskTy17': '[산부인과응급] 분만',
-        'MKioskTy18': '[산부인과응급] 산과수술',
-        'MKioskTy19': '[산부인과응급] 부인과수술',
-        'MKioskTy20': '[중증화상] 전문치료',
-        'MKioskTy21': '[사지접합] 수족지접합',
-        'MKioskTy22': '[사지접합] 수족지접합 외',
-        'MKioskTy23': '[응급투석] HD',
-        'MKioskTy24': '[응급투석] CRRT',
-        'MKioskTy25': '[정신과적응급] 폐쇄병동입원',
-        'MKioskTy26': '[안과적수술] 응급',
-        'MKioskTy27': '[영상의학혈관중재] 성인',
-        'MKioskTy28': '[영상의학혈관중재] 영유아'
+        // 공식 매핑 V4 / 실측 확인: Ty1~27 = 중증질환, Ty28 = 응급실
+        'MKioskTy1': '[재관류중재술] 심근경색',
+        'MKioskTy2': '[재관류중재술] 뇌경색',
+        'MKioskTy3': '[뇌출혈수술] 거미막하출혈',
+        'MKioskTy4': '[뇌출혈수술] 거미막하출혈 외',
+        'MKioskTy5': '[대동맥응급] 흉부',
+        'MKioskTy6': '[대동맥응급] 복부',
+        'MKioskTy7': '[담낭담관질환] 담낭질환',
+        'MKioskTy8': '[담낭담관질환] 담도포함질환',
+        'MKioskTy9': '[복부응급수술] 비외상',
+        'MKioskTy10': '[장중첩/폐색] 영유아',
+        'MKioskTy11': '[응급내시경] 성인 위장관',
+        'MKioskTy12': '[응급내시경] 영유아 위장관',
+        'MKioskTy13': '[응급내시경] 성인 기관지',
+        'MKioskTy14': '[응급내시경] 영유아 기관지',
+        'MKioskTy15': '[저체중출생아] 집중치료',
+        'MKioskTy16': '[산부인과응급] 분만',
+        'MKioskTy17': '[산부인과응급] 산과수술',
+        'MKioskTy18': '[산부인과응급] 부인과수술',
+        'MKioskTy19': '[중증화상] 전문치료',
+        'MKioskTy20': '[사지접합] 수족지접합',
+        'MKioskTy21': '[사지접합] 수족지접합 외',
+        'MKioskTy22': '[응급투석] HD',
+        'MKioskTy23': '[응급투석] CRRT',
+        'MKioskTy24': '[정신과적응급] 폐쇄병동입원',
+        'MKioskTy25': '[안과적수술] 응급',
+        'MKioskTy26': '[영상의학혈관중재] 성인',
+        'MKioskTy27': '[영상의학혈관중재] 영유아',
+        'MKioskTy28': '응급실 수용'
     };
     var Y_CODE_MAP = {
         'Y000': '응급실',
@@ -6478,6 +6559,23 @@ var EX = (function () {
         }
         return msg;
     }
+    function _exSplitMsg(ln) {
+        // '[수용불가] [성형외과] 본문' → {label:'성형외과', msg:'[수용불가] 본문'}
+        var m1 = /^\[([^\]]*)\]\s*([\s\S]*)$/.exec(ln || '');
+        if (!m1) return { label: '-', msg: String(ln || '') };
+        var cat = (m1[1] || '').trim(), rest = (m1[2] || '').trim();
+        var ST = { '수용불가': ['[수용 불가능]', '#dc3545'],
+                   '수용가능': ['[ 수용 가능 ]', '#28a745'],
+                   '문의필요': ['[ 문의 필요 ]', '#e67e00'] };
+        var st = ST[cat] || [cat || '-', '#333'];
+        var m2 = /^\[([^\]]*)\]\s*([\s\S]*)$/.exec(rest);
+        if (m2) {
+            var dept = (m2[1] || '').trim(), body = (m2[2] || '').trim();
+            return { label: st[0], color: st[1], cat: cat, dept: dept,
+                     msg: dept ? ('[' + dept + '] ' + body) : body };
+        }
+        return { label: st[0], color: st[1], cat: cat, dept: '', msg: rest };
+    }
     async function fetchHospitalMsgs(hpid) {
         try {
             var msgs = [], page = 1;
@@ -6492,11 +6590,15 @@ var EX = (function () {
                     var blk = (txt(it, 'symBlkMsg') || '').trim();
                     var mag = (txt(it, 'symTypCodMag') || '').trim();
                     var cod = (txt(it, 'symTypCod') || '').trim();
+                    var trt = (txt(it, 'trtPrtCodMag') || '').trim();
                     var label = resolveTypeLabel(mag, cod);
                     var cm = cleanMsg(blk);
-                    if (label === '응급실' || label === '') label = '';
-                    if (!cm && !label) continue;
-                    var content = (label && cm) ? (label + ': ' + cm) : (cm ? cm : label);
+                    // 진료과목 1순위, 없으면 질환명/응급실 (파이썬판과 동일 규칙)
+                    var dept = trt || label || '응급실';
+                    if (!cm && !dept) continue;
+                    // 본문이 이미 '[..]' 로 시작하면 과목 중복이므로 접두 생략
+                    var content = !cm ? ('[' + dept + ']')
+                                : (cm.charAt(0) === '[' ? cm : ('[' + dept + '] ' + cm));
                     var cat = categorizeException(label, cm);
                     msgs.push('[' + cat + '] ' + content);
                 }
@@ -6792,22 +6894,28 @@ var EX = (function () {
                 var dutyRaw2 = (h.duty_inf || '').trim();
                 var dl2 = dutyRaw2 ? dutyRaw2.replace(/，/g, ',').split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
                 var res = [];
-                if (un.length) {
-                    res.push('<div style="color:#dc3545;font-weight:700;margin-left:5px;">수용불가:</div>');
-                    un.forEach(function (it) { res.push('<div style="margin-left:10px;color:#dc3545;line-height:1.3;">' + it + '</div>'); });
-                }
-                if (av.length) {
-                    res.push('<div style="color:#28a745;font-weight:700;margin-left:5px;margin-top:5px;">수용가능:</div>');
-                    av.forEach(function (it) { res.push('<div style="margin-left:10px;color:#28a745;line-height:1.3;">' + it + '</div>'); });
-                }
-                if (inq.length) {
-                    res.push('<div style="color:#e67e00;font-weight:700;margin-left:5px;margin-top:5px;">※ 문의 필요:</div>');
-                    inq.forEach(function (it) { res.push('<div style="margin-left:10px;color:#e67e00;line-height:1.3;">' + it + '</div>'); });
-                }
-                if (dl2.length) {
-                    res.push('<div style="color:#5a6a7e;font-weight:700;margin-left:5px;margin-top:5px;">상시 운영 제한:</div>');
-                    dl2.forEach(function (it) { res.push('<div style="margin-left:10px;color:#5a6a7e;line-height:1.3;">' + it + '</div>'); });
-                }
+                // 앱(generate_comparison_html)과 동일 서식:
+                //  그룹 제목 같은 색 밑줄 / 그룹 사이 1줄 공백 / [진료과목]만 검정
+                var _grp = function (title, color, lines, deptBlack) {
+                    if (!lines.length) return;
+                    if (res.length) res.push('<div style="height:1.3em;"></div>');
+                    res.push('<div style="color:' + color + ';font-weight:700;margin-left:5px;'
+                           + 'text-decoration:underline;text-decoration-color:' + color + ';">'
+                           + title + '</div>');
+                    lines.forEach(function (it) {
+                        var body = it;
+                        if (deptBlack !== false) {
+                            var mm = /^\[([^\]]*)\]\s*([\s\S]*)$/.exec(it || '');
+                            if (mm) body = '<span style="color:#000;">[' + mm[1] + ']</span> ' + mm[2];
+                        }
+                        res.push('<div style="margin-left:10px;color:' + color
+                               + ';line-height:1.3;">' + body + '</div>');
+                    });
+                };
+                _grp('수용불가:', '#dc3545', un, true);
+                _grp('수용가능:', '#28a745', av, true);
+                _grp('※ 문의 필요:', '#e67e00', inq, true);
+                _grp('상시 운영 제한:', '#5a6a7e', dl2, false);
                 var fmt = res.length ? res.join('') : exc;
                 html += '<td class="exception-cell exception-warning" style="text-align:left;padding:6px;vertical-align:top;">' + fmt + '</td>';
             }
@@ -7145,13 +7253,14 @@ var EX = (function () {
             if (typeof r === 'string') {
                 String(r).split('\n').forEach(function (ln) {
                     ln = ln.trim();
-                    if (ln && ln.indexOf('\u2705') !== 0) msgs.push({ label: '\uc218\uc6a9\ubd88\uac00', msg: ln });
+                    if (!ln || ln === '정상' || ln === '정보 없음') return;
+                    msgs.push(_exSplitMsg(ln));
                 });
             } else if (Array.isArray(r)) {
                 r.forEach(function (x) {
                     msgs.push(typeof x === 'object'
                         ? { label: x.label || x.type || '-', msg: x.msg || x.message || String(x) }
-                        : { label: '\uc218\uc6a9\ubd88\uac00', msg: String(x) });
+                        : _exSplitMsg(String(x)));
                 });
             }
         } catch (e) { msgs = []; }
@@ -8077,8 +8186,11 @@ def _build_full_export(auto_entries, iv_ms):
         ' closeCompare();\n'
         "        overlay = document.createElement('div');\n"
         "        overlay.style.cssText = 'position:fixed;inset:0;z-index:99998;background:#f5f7fa;';\n"
+        # 내부 문서(.back-sel)가 이미 복귀 버튼을 그리므로 바깥 버튼은 만들지 않는다.
+        # (중복 표시 방지 — 내부 버튼이 parent.EXAPP.closeCompare 를 호출한다)
         "        const back = document.createElement('button');\n"
-        "        back.textContent = '← 병원 선택';\n"
+        "        back.textContent = '';\n"
+        "        back.style.display = 'none';\n"
         # 앱(.back-sel)과 동일한 모양: 좌상단 밀착, 각진 형태, 연회색, 최소 여백
         "        back.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;padding:1px 4px;border:1px solid #dfe3e8;border-radius:0;background:#eef0f3;color:#7b8492;font-size:0.58rem;font-weight:600;line-height:1.15;cursor:pointer;';\n"
         ' back.onclick = closeCompare;\n'
@@ -10634,12 +10746,9 @@ if _IS_ANDROID:
                 w = Window.width
                 h = Window.height
                 n = max(1, len(hospitals))
-                #  이슈8: 시인성 최대 폰트 — 병원수 2개 기준 14sp, 많을수록 축소
-                # 최소값 상향(9→11) + 기본값 상향(14→16)
-                # 창 폭·높이에 비례하는 기준 폰트 (PiP 크기 조절 시 내용도 비례)
-                _by_w = w / 26.0
-                _by_h = h / (3.6 * (n + 1))
-                base_sp = int(max(8, min(24, min(_by_w, _by_h))))
+                #  이슈8: 시인성 최대 폰트 — 병원수 2개 기준 16sp, 많을수록 축소
+                #  창 비례 산식은 PiP 창에서 글자가 잘려 원복 (하한 11 / 상한 16)
+                base_sp = max(11, min(16, 16 - max(0, n - 2)))
             except Exception:
                 w = 480; h = 960; n = 1; base_sp = 13
             bar_sp = max(9, base_sp - 2)   # 막대 행: base보다 2sp 작게 (최소 9sp)
