@@ -1205,31 +1205,94 @@ jobs:
         if: always()
         run: |
           set +e
+          # [FIX] 오탐 제거
+          #  _python_bundle/site-packages 는 p4a 가 .py 를 지우고 .pyc 만 남기는
+          #  런타임 번들이라 werkzeug/urls.py 자체가 없다. 여기에 grep 을 걸면
+          #  정상 빌드에서도 'url_quote 없음' 오류가 나서 워크플로가 실패했다.
+          #  → 소스가 살아 있는 실제 설치본(python-installs/<arch>)만 판정한다.
           echo "── 번들된 패키지 확인 ──"
-          for d in $(find .buildozer -type d -name site-packages 2>/dev/null) \
-                   $(find .buildozer -type d -path '*python-installs/*' -maxdepth 8 2>/dev/null | head -4); do
+          OK=0; SEEN=0
+          for d in $(find .buildozer -type d -path '*python-installs/*' -maxdepth 8 2>/dev/null); do
             [ -d "$d/werkzeug" ] || continue
+            [ -f "$d/werkzeug/urls.py" ] || continue          # .pyc 전용 번들 제외
+            SEEN=$((SEEN+1))
             V=$(grep -ho "__version__ = \"[^\"]*\"" "$d/werkzeug/__init__.py" 2>/dev/null | head -1)
             echo "werkzeug @ $d  $V"
             if grep -q "def url_quote" "$d/werkzeug/urls.py" 2>/dev/null; then
-              echo "  url_quote: 있음 (flask 2.0.3 호환)"
+              echo "  url_quote: 있음 → flask 호환 OK"
+              OK=$((OK+1))
             else
-              echo "::error::werkzeug 에 url_quote 없음 — flask 2.0.3 과 비호환. 캐시 폐기 필요"
+              echo "::error::werkzeug 에 url_quote 없음 — flask 와 비호환. 캐시 폐기 후 재빌드 필요"
             fi
           done
+          # 참고용: 런타임 번들에 werkzeug 가 실제로 포함됐는지만 확인(판정 아님)
+          for d in $(find .buildozer -type d -name site-packages -path '*_python_bundle*' 2>/dev/null); do
+            [ -d "$d/werkzeug" ] || continue
+            N=$(find "$d/werkzeug" -name '*.pyc' | wc -l)
+            echo "  (런타임 번들) $d  werkzeug .pyc ${N}개"
+          done
+          if [ "$SEEN" -eq 0 ]; then
+            echo "::warning::werkzeug 소스 설치본을 찾지 못해 호환성 판정을 생략했습니다."
+          fi
           grep -m1 "^requirements" buildozer.spec
 
-      - name: APK 업로드
+      - name: 과거 아티팩트 정리 (스토리지 쿼터 확보)
         if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # [FIX] 'Artifact storage quota has been hit' 으로 APK 를 못 받던 문제.
+          #  이번 실행분을 제외한 과거 아티팩트를 먼저 지워 공간을 확보한다.
+          set +e
+          RID="${{ github.run_id }}"
+          IDS=$(gh api --paginate "/repos/${{ github.repository }}/actions/artifacts"                   --jq ".artifacts[] | select(.workflow_run.id != ${RID}) | .id" 2>/dev/null)
+          DEL=0
+          for ID in $IDS; do
+            gh api -X DELETE "/repos/${{ github.repository }}/actions/artifacts/$ID" >/dev/null 2>&1               && DEL=$((DEL+1))
+          done
+          echo "삭제한 과거 아티팩트: ${DEL}개"
+
+      - name: APK 업로드
+        id: apk_artifact
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ermonitor-apk
           path: bin/*.apk
           if-no-files-found: warn
-          retention-days: 30
+          compression-level: 0
+          retention-days: 7
+
+      - name: APK 업로드 폴백 (Release 자산)
+        if: always() && steps.apk_artifact.outcome != 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 아티팩트 쿼터가 막혀도 APK 를 받을 수 있게 Release 자산으로 올린다.
+          # (Release 자산은 Actions 아티팩트 쿼터에 포함되지 않는다)
+          set +e
+          APK=$(ls -1 bin/*.apk 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "::warning::APK 없음 — Release 폴백 생략"; exit 0
+          fi
+          TAG="build-${{ github.run_number }}"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --notes "자동 빌드 (run ${{ github.run_id }})" \
+            || { echo "::warning::Release 생성 실패"; exit 0; }
+          gh release upload "$TAG" "$APK" --clobber \
+            && echo "::notice::아티팩트 쿼터 초과 → Release '$TAG' 에 APK 업로드 완료" \
+            || echo "::warning::Release 업로드 실패"
+          {
+            echo ""
+            echo "> 아티팩트 스토리지 쿼터 초과로 **Releases → \`$TAG\`** 에 APK 를 올렸습니다."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 빌드 로그 업로드
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
@@ -1240,7 +1303,7 @@ jobs:
             .buildozer/android/platform/build-*/dists/*/AndroidManifest.xml
             .buildozer/android/platform/build-*/dists/*/build/outputs/logs/*
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 5
 
       - name: 실패 원인 요약
         if: failure()
