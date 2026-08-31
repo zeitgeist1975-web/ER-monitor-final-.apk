@@ -66,8 +66,14 @@ IO_CANDS = _io_candidates()
 IO_WRITABLE = [d for d in IO_CANDS if _writable(d)]
 IO_DIR = IO_WRITABLE[0] if IO_WRITABLE else os.getcwd()
 os.environ.setdefault('ERMON_IO_DIR', IO_DIR)
-LOG_PATH = os.path.join(IO_DIR, 'ermon_boot.log')
-FAULT_PATH = os.path.join(IO_DIR, 'ermon_fault.log')
+# [일원화 2026-H3] ermon_boot.log / ermon_fault.log 폐지.
+#  부트스트랩·네이티브크래시·앱 로그를 전부 ermon.log 한 파일에 누적한다.
+#  (앱이 시작조차 못 한 사고도 같은 파일에서 인과를 이어 볼 수 있어야 한다)
+LOG_NAME = 'ermon.log'
+LOG_PATH = os.path.join(IO_DIR, LOG_NAME)
+FAULT_PATH = LOG_PATH
+os.environ['ERMON_LOG'] = LOG_PATH
+os.environ['ERMON_STATE'] = os.path.join(IO_DIR, 'ermon_state.json')
 
 # ══════════════════════════════════════════════════════════════════
 #  1. 실시간 로그 (라인마다 flush + fsync → 강제종료에도 손실 없음)
@@ -95,6 +101,8 @@ def blog(msg, tag=BOOT_TAG):
                 pass
 
 # 네이티브 크래시(SIGSEGV/SIGABRT/SIGFPE/SIGBUS) 스택 덤프
+#  통합 로그와 같은 파일에 O_APPEND 로 덧붙인다(별도 fd — 순서는 시각으로 판별).
+_FF = None
 try:
     _FF = open(FAULT_PATH, 'a', buffering=1)
     faulthandler.enable(file=_FF, all_threads=True)
@@ -112,23 +120,29 @@ def _excepthook(t, v, tb):
         blog(ln.rstrip(), 'FATAL')
 sys.excepthook = _excepthook
 
-# 쓰기 가능한 모든 후보에 로그 위치 안내 파일을 남긴다(유실 방지).
-for _d in IO_WRITABLE[:5]:
-    try:
-        with open(os.path.join(_d, 'ermon_log_where.txt'), 'w',
-                  encoding='utf-8') as _f:
-            _f.write(LOG_PATH + '\n')
-    except Exception:
-        pass
+# [일원화 2026-H3] 안내 파일 살포 중지.
+#  로그가 Download 밖에 있을 때만, Download 에 1개만 남긴다.
+if 'Download' not in os.path.dirname(LOG_PATH):
+    for _d in ('/sdcard/Download', '/storage/emulated/0/Download'):
+        if not _writable(_d):
+            continue
+        try:
+            with open(os.path.join(_d, 'ermon_log_where.txt'), 'w',
+                      encoding='utf-8') as _f:
+                _f.write(LOG_PATH + '\n')
+        except Exception:
+            pass
+        break
 
 
 def _relocate_log(prefer='/sdcard/Download'):
     """권한 획득 후 Download 가 열리면 로그를 그쪽으로 옮긴다."""
-    global _LOGF, LOG_PATH
+    global _LOGF, LOG_PATH, _FF, FAULT_PATH
     if os.path.dirname(LOG_PATH) == prefer or not _writable(prefer):
         return
     try:
-        new = os.path.join(prefer, 'ermon_boot.log')
+        new = os.path.join(prefer, LOG_NAME)
+        _old = LOG_PATH
         try:
             data = open(LOG_PATH, encoding='utf-8', errors='replace').read()
         except Exception:
@@ -145,7 +159,28 @@ def _relocate_log(prefer='/sdcard/Download'):
                 pass
             _LOGF = nf
             LOG_PATH = new
+        # 원본 제거: 같은 이름의 로그가 두 곳에 남지 않게 한다.
+        try:
+            if data and os.path.exists(_old):
+                os.remove(_old)
+        except Exception:
+            pass
+        # faulthandler 출력도 새 파일로 재지정
+        FAULT_PATH = new
+        try:
+            _nf = open(FAULT_PATH, 'a', buffering=1)
+            faulthandler.enable(file=_nf, all_threads=True)
+            try:
+                if _FF:
+                    _FF.close()
+            except Exception:
+                pass
+            _FF = _nf
+        except Exception:
+            pass
         os.environ['ERMON_IO_DIR'] = prefer
+        os.environ['ERMON_LOG'] = new
+        os.environ['ERMON_STATE'] = os.path.join(prefer, 'ermon_state.json')
         blog('로그 이전 완료 -> %s' % new)
     except Exception as e:
         blog('로그 이전 실패: %s' % e, 'WARN')
@@ -444,6 +479,12 @@ def main():
         raise SystemExit(2)
     blog('진입점 = %s' % target)
 
+    # [일원화 2026-H3] 원본 앱이 같은 파일에 이어 쓰도록 경로를 인계한다.
+    os.environ['ERMON_LOG'] = LOG_PATH
+    os.environ['ERMON_STATE'] = os.path.join(
+        os.path.dirname(LOG_PATH), 'ermon_state.json')
+    blog('경로 인계 ERMON_LOG=%s' % os.environ['ERMON_LOG'])
+    blog('경로 인계 ERMON_STATE=%s' % os.environ['ERMON_STATE'])
     blog('--- 앱 실행: %s (%d bytes) ---' % (target, os.path.getsize(target)))
     import runpy
     try:

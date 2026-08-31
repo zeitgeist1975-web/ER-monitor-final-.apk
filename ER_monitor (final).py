@@ -5,23 +5,220 @@
 import sys as _sys
 import os as _os
 
-_crash_paths = [
-    '/sdcard/Download/emergency_crash.log',
-    '/sdcard/emergency_crash.log', 
-    '/data/local/tmp/emergency_crash.log',
+import time as _time
+import threading as _th0
+
+# ══════════════════════════════════════════════════════════════════
+#  [일원화 2026-H1] 단일 통합 로그
+#   이전: emergency_crash.log / er_name_search.log / emergency_app.log
+#         3계열이 서로 다른 경로에 흩어져, 사고 순간의 인과를 한 파일에서
+#         재구성할 수 없었다(이번 광주 오진의 직접 원인).
+#   현재: 모든 채널(BOOT/APP/NS/API/KIVY/JS/CRASH/ADMIN)이 ermon.log 한 곳.
+#   위치: 소스파일과 같은 폴더 → Download → /sdcard → /data/local/tmp
+#   특성: 매 줄 flush(비정상 종료에도 보존) · 4MB 회전 · 스레드명 포함
+# ══════════════════════════════════════════════════════════════════
+LOG_NAME = 'ermon.log'
+#  [일원화 2026-H3] 파일이 둘로 쪼개지던 문제의 원인:
+#   APK 에서 소스 폴더는 /data/data/<pkg>/files/app (쓰기 가능하지만
+#   사용자가 볼 수 없음). 그래서 부팅 로그가 거기 쌓이다가, 나중에
+#   _setup_logging() 이 외부저장소를 승격하는 순간부터 다른 파일로 갈아탔다.
+#   → ① main.py 부트스트랩이 정한 경로를 ERMON_LOG 로 인계받아 1순위
+#     ② 안드로이드에서는 '사용자가 볼 수 있는 경로'를 소스 폴더보다 앞에
+#     ③ 경로가 바뀔 때는 기존 내용을 이어붙여 옮긴다(_log_migrate)
+_ANDROID_BOOT = hasattr(_sys, 'getandroidapilevel')
+_ENV_LOG = (_os.environ.get('ERMON_LOG') or '').strip()
+_ENV_IO = (_os.environ.get('ERMON_IO_DIR') or '').strip()
+_LOG_CANDIDATES = []
+if _ENV_LOG:
+    _LOG_CANDIDATES.append(_ENV_LOG)          # main.py 가 이미 쓰고 있는 파일
+if _ENV_IO:
+    _LOG_CANDIDATES.append(_os.path.join(_ENV_IO, LOG_NAME))
+_SRC_LOG = ''
+try:
+    _SRC_LOG = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), LOG_NAME)
+except Exception:
+    pass
+if _SRC_LOG and not _ANDROID_BOOT:
+    _LOG_CANDIDATES.append(_SRC_LOG)          # PC: 소스 폴더가 가장 편하다
+_LOG_CANDIDATES += [
+    '/storage/emulated/0/Download/' + LOG_NAME,
+    '/sdcard/Download/' + LOG_NAME,
 ]
+if _SRC_LOG and _ANDROID_BOOT:
+    _LOG_CANDIDATES.append(_SRC_LOG)          # 안드로이드: 외부저장소 실패 시에만
+_LOG_CANDIDATES += [
+    '/sdcard/' + LOG_NAME,
+    '/data/local/tmp/' + LOG_NAME,
+    _os.path.join(_os.path.expanduser('~'), LOG_NAME),
+]
+_LOG_CANDIDATES = [p for i, p in enumerate(_LOG_CANDIDATES)
+                   if p and p not in _LOG_CANDIDATES[:i]]
+#  ERMON_LOG 가 있으면 부트스트랩이 정한 경로가 최종 — 승격 금지
+_LOG_FIXED = bool(_ENV_LOG)
+_LOG_PICK = [None]
+_LOG_SEQ = [0]
+_LOG_MAX = 4 * 1024 * 1024
+_LOG_IO = _th0.Lock()
+_LOG_RING = []                 # Kivy 디버그 패널 / /diag 최근 로그용
+_LOG_RING_MAX = 600
+
+
+def _ulog(tag, msg):
+    """[일원화] 모든 로그의 단일 진입점. 실패해도 절대 예외를 던지지 않는다."""
+    try:
+        t = _time.time()
+        ts = _time.strftime('%m-%d %H:%M:%S', _time.localtime(t)) + ('.%03d' % int((t % 1) * 1000))
+    except Exception:
+        ts = '??-?? ??:??:??.???'
+    try:
+        th = _th0.current_thread().name[:12]
+    except Exception:
+        th = '?'
+    with _LOG_IO:
+        _LOG_SEQ[0] += 1
+        line = '%06d %s %-12s [%s] %s' % (_LOG_SEQ[0], ts, th, tag, msg)
+        try:
+            _LOG_RING.append(line)
+            if len(_LOG_RING) > _LOG_RING_MAX:
+                del _LOG_RING[0:len(_LOG_RING) - _LOG_RING_MAX]
+        except Exception:
+            pass
+        try:
+            print(line)
+        except Exception:
+            pass
+        paths = [_LOG_PICK[0]] if _LOG_PICK[0] else _LOG_CANDIDATES
+        for p in paths:
+            try:
+                try:
+                    if _os.path.exists(p) and _os.path.getsize(p) > _LOG_MAX:
+                        _os.replace(p, p + '.1')
+                except Exception:
+                    pass
+                with open(p, 'a', encoding='utf-8', errors='replace') as f:
+                    f.write(line + '\n')
+                    f.flush()
+                    try:
+                        _os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                _LOG_PICK[0] = p
+                return p
+            except Exception:
+                continue
+    return None
+
 
 def _write_crash(msg):
-    """파일 쓰기만 (logging 없이)"""
-    for p in _crash_paths:
+    """하위호환 래퍼 — 통합 로그로 수렴."""
+    return _ulog('BOOT', msg)
+
+
+def _log_migrate(new_path):
+    """[일원화 2026-H3] 로그 파일을 new_path 로 '이관'한다.
+    기존 파일 내용을 앞에 이어붙이고 원본을 지워, 어느 시점에도
+    ermon.log 가 두 개로 존재하지 않도록 보장한다."""
+    if not new_path:
+        return _LOG_PICK[0]
+    with _LOG_IO:
+        old = _LOG_PICK[0]
+        if old and _os.path.abspath(old) == _os.path.abspath(new_path):
+            return old
         try:
-            with open(p, 'a') as f:
-                f.write(msg + '\n')
+            _os.makedirs(_os.path.dirname(new_path) or '.', exist_ok=True)
+            prev = ''
+            if old and _os.path.exists(old):
+                with open(old, encoding='utf-8', errors='replace') as f:
+                    prev = f.read()
+            with open(new_path, 'a', encoding='utf-8', errors='replace') as f:
+                if prev:
+                    f.write(prev)
+                f.write('%s [BOOT] 로그 이관: %s -> %s\n'
+                        % (_time.strftime('%m-%d %H:%M:%S'), old, new_path))
                 f.flush()
-            return p
-        except:
+                try:
+                    _os.fsync(f.fileno())
+                except Exception:
+                    pass
+            if old and prev and _os.path.exists(old):
+                try:
+                    _os.remove(old)              # 분산 방지: 원본 제거
+                except Exception:
+                    pass
+            if new_path not in _LOG_CANDIDATES:
+                _LOG_CANDIDATES.insert(0, new_path)
+            _LOG_PICK[0] = new_path
+            return new_path
+        except Exception:
+            return old
+
+
+def _log_path():
+    return _LOG_PICK[0] or (_LOG_CANDIDATES[0] if _LOG_CANDIDATES else '?')
+
+
+def _log_size_str():
+    try:
+        return '%.1f KB' % (_os.path.getsize(_log_path()) / 1024.0)
+    except Exception:
+        return '크기불명'
+
+
+def _log_strays():
+    """현재 사용 중이 아닌 ermon.log 잔재를 찾아 알린다(일원화 자체검증)."""
+    cur = _os.path.abspath(_log_path())
+    out = []
+    for p in _LOG_CANDIDATES:
+        try:
+            if _os.path.exists(p) and _os.path.abspath(p) != cur:
+                out.append('%s (%d B)' % (p, _os.path.getsize(p)))
+        except Exception:
             continue
-    return None
+    return ' / '.join(out)
+
+
+def _install_crash_hooks():
+    """메인/서브 스레드의 미처리 예외를 전부 통합 로그에 남긴다.
+    (이전에는 Flask 워커 스레드 예외가 어디에도 기록되지 않았다)"""
+    import traceback as _tb
+
+    def _hook(et, ev, tb):
+        try:
+            _ulog('CRASH', 'UNCAUGHT %s: %s\n%s'
+                  % (getattr(et, '__name__', et), ev,
+                     ''.join(_tb.format_exception(et, ev, tb))))
+        except Exception:
+            pass
+
+    try:
+        _sys.excepthook = _hook
+    except Exception:
+        pass
+
+    def _thook(a):
+        try:
+            _ulog('CRASH', 'THREAD %s %s: %s\n%s'
+                  % (getattr(getattr(a, 'thread', None), 'name', '?'),
+                     getattr(a.exc_type, '__name__', a.exc_type), a.exc_value,
+                     ''.join(_tb.format_exception(a.exc_type, a.exc_value,
+                                                  a.exc_traceback))))
+        except Exception:
+            pass
+
+    try:
+        _th0.excepthook = _thook
+    except Exception:
+        pass
+    try:
+        import atexit as _atexit
+        _atexit.register(lambda: _ulog('BOOT', '프로세스 종료(atexit)'))
+    except Exception:
+        pass
+
+
+_install_crash_hooks()
+_ulog('BOOT', '=' * 58)
 
 _write_crash(f'[0] Python started, __name__={__name__}')
 _write_crash(f'[0] sys.version={_sys.version}')
@@ -68,6 +265,9 @@ except Exception as _e:
 
 # ── 브라우저 → Kivy PiP 요청 공유 상태 (Flask 스레드가 쓰고, Kivy Clock이 읽음)
 _pip_state = {'pending': False, 'h_param': '', 'iv_sec': 180}
+#  [FIX 2026-H2] PiP 시도 결과를 브라우저/진단화면에서 즉시 확인하기 위한 슬롯
+_PIP_LAST = {'stage': '', 'ok': False, 'reason': '', 'ts': 0.0, 'api': 0,
+             'device_feature': None, 'manifest_flag': None}
 
 # ══════════════════════════════════════════════════════════════════
 #  [ROOT-FIX 2026-E1] 프로세스 식별 / 완전종료 훅
@@ -117,8 +317,37 @@ _compare_bed_cache_lock = _threading.Lock()
 # ══════════════════════════════════════════════════════════════════
 _thread_http = _threading.local()
 
+_API_KEYS = ('Q0', 'Q1', 'QZ', 'QN', 'STAGE1', 'STAGE2', 'HPID', 'pageNo', 'numOfRows')
+
+
 def _http_get(url, **kwargs):
-    """requests.get과 동일 시그니처. 스레드-로컬 Session으로 연결 재사용."""
+    """requests.get과 동일 시그니처. 스레드-로컬 Session으로 연결 재사용.
+    [일원화 2026-H1] 모든 외부 API 호출을 op·파라미터·상태·바이트·소요와
+    함께 통합 로그에 남긴다. '어떤 질의가 무엇을 돌려줬는지'가 파일 하나에
+    남아야 원인 추적이 가능하다."""
+    _t0 = _time.time()
+    _op = url.rsplit('/', 1)[-1]
+    try:
+        _pp = kwargs.get('params') or {}
+        _ps = ' '.join('%s=%s' % (k, _pp[k]) for k in _API_KEYS if k in _pp)
+    except Exception:
+        _ps = ''
+    try:
+        _r = _http_get_raw(url, **kwargs)
+        try:
+            _n = len(_r.content)
+        except Exception:
+            _n = -1
+        _ulog('API', '%s %s -> %s %dB %dms'
+              % (_op, _ps, _r.status_code, _n, int((_time.time() - _t0) * 1000)))
+        return _r
+    except Exception as _e:
+        _ulog('API', '%s %s -> EXC %s (%dms)'
+              % (_op, _ps, str(_e)[:120], int((_time.time() - _t0) * 1000)))
+        raise
+
+
+def _http_get_raw(url, **kwargs):
     s = getattr(_thread_http, 'session', None)
     if s is None:
         s = requests.Session()
@@ -168,16 +397,8 @@ LOG_FILE = None
 _LOG_FILE_REF = [None]
 
 def _log(msg, level='INFO'):
-    """전역 로거 + stdout 동시 기록"""
-    try:
-        if level == 'ERROR':
-            logging.error(msg)
-        elif level == 'DEBUG':
-            logging.debug(msg)
-        else:
-            logging.info(msg)
-    except Exception:
-        print(msg)
+    """[일원화] 통합 로그(ermon.log) 단일 경로."""
+    _ulog('APP' if level == 'INFO' else level, msg)
 
 # ── 메모리 내 디버그 로그 (Kivy TextInput 패널에 실시간 표시됨) ─────────
 # Flask 스레드·Kivy 스레드 모두에서 안전하게 append 가능 (GIL 보장).
@@ -195,20 +416,147 @@ def _dlog(msg):
     _DEBUG_LINES.append(entry)
     if len(_DEBUG_LINES) >300:
         _DEBUG_LINES.pop(0)
-    _log(msg)  # 파일/stdout에도 기록
+    _ulog('APP', msg)
+
+# ══════════════════════════════════════════════════════════════════
+#  [일원화 2026-H1] 단일 상태/설정 파일  ermon_state.json
+#   이전: pip_prefs.json · emergency_state.json · bed_monitor.json 3종이
+#         서로 다른 경로에 흩어져 있어, 재시작 후 상태 불일치의 원인을
+#         추적할 수 없었다.
+#   현재: 한 파일 안의 섹션(pip_prefs / pip_state / monitor)으로 통합.
+#   모든 읽기/쓰기가 통합 로그에 기록된다.
+# ══════════════════════════════════════════════════════════════════
+STATE_NAME = 'ermon_state.json'
+#  로그와 동일 정책: 부트스트랩(main.py)이 정한 위치를 1순위로 인계받는다.
+_STATE_CANDIDATES = []
+_ENV_STATE = (os.environ.get('ERMON_STATE') or '').strip()
+if _ENV_STATE:
+    _STATE_CANDIDATES.append(_ENV_STATE)
+if _ENV_IO:
+    _STATE_CANDIDATES.append(os.path.join(_ENV_IO, STATE_NAME))
+_SRC_STATE = ''
+try:
+    _SRC_STATE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), STATE_NAME)
+except Exception:
+    pass
+if _SRC_STATE and not _ANDROID_BOOT:
+    _STATE_CANDIDATES.append(_SRC_STATE)
+_STATE_CANDIDATES += [
+    '/storage/emulated/0/Download/' + STATE_NAME,
+    '/sdcard/Download/' + STATE_NAME,
+]
+if _SRC_STATE and _ANDROID_BOOT:
+    _STATE_CANDIDATES.append(_SRC_STATE)
+_STATE_CANDIDATES += [
+    '/data/local/tmp/' + STATE_NAME,
+    os.path.join(os.path.expanduser('~'), STATE_NAME),
+]
+_STATE_CANDIDATES = [p for i, p in enumerate(_STATE_CANDIDATES)
+                     if p and p not in _STATE_CANDIDATES[:i]]
+_STATE_PICK = [None]
+_STATE_LOCK = _threading.Lock()
+
+
+def _state_load_all():
+    for p in ([_STATE_PICK[0]] if _STATE_PICK[0] else _STATE_CANDIDATES):
+        try:
+            if not os.path.exists(p):
+                continue
+            with open(p, encoding='utf-8') as f:
+                d = json.loads(f.read() or '{}')
+            if isinstance(d, dict):
+                _STATE_PICK[0] = p
+                return d
+        except Exception as e:
+            _ulog('STATE', '읽기 실패 %s: %s' % (p, e))
+    return {}
+
+
+def _state_save_all(d):
+    for p in ([_STATE_PICK[0]] if _STATE_PICK[0] else _STATE_CANDIDATES):
+        try:
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(d, ensure_ascii=False))
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            _STATE_PICK[0] = p
+            return p
+        except Exception:
+            continue
+    _ulog('STATE', '저장 실패: 쓰기 가능한 경로 없음')
+    return None
+
+
+def _state_get(section, default=None):
+    with _STATE_LOCK:
+        v = _state_load_all().get(section)
+    _ulog('STATE', 'get %s -> %s' % (section, '있음' if v else '없음'))
+    return default if v is None else v
+
+
+def _state_set(section, value):
+    """value=None 이면 섹션 삭제."""
+    with _STATE_LOCK:
+        d = _state_load_all()
+        if value is None:
+            d.pop(section, None)
+        else:
+            d[section] = value
+        p = _state_save_all(d)
+    _ulog('STATE', 'set %s (%s) -> %s'
+          % (section, '삭제' if value is None else '저장', p))
+    return p
+
+
+def _state_path():
+    return _STATE_PICK[0] or (_STATE_CANDIDATES[0] if _STATE_CANDIDATES else '?')
+
 
 SERVICE_KEY = 'ac084c52bdaee51ccc5d0beedacbed40db1995171f5b980ae3549de259b2db3e'
-_write_crash('[2] Flask routes registering...')
+_write_crash('[2] Flask routes registering... BUILD=2026-H1')
 API_URL = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/getEmrrmRltmUsefulSckbdInfoInqire'
 MSG_API_URL = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/getEmrrmSrsillDissMsgInqire'
 LIST_API_URL = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/getEgytListInfoInqire'
+#  중증질환자 수용가능정보 — 목록 API 와 다른 백엔드 테이블을 쓰므로
+#  Q0 계열이 전멸한 시/도의 hpid 확보용 대체 축으로 사용한다.
+STRM_API_URL = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/getStrmListInfoInqire'
+#  기관 기본정보 — HPID 단건 조회. '지역 필터'가 아니라 '기관 키' 조회이므로
+#  시/도 파라미터가 전멸해도 유일하게 살아남는 축이다. 주소 확정에 사용.
+BASS_API_URL = 'https://apis.data.go.kr/B552657/ErmctInfoInqireService/getEgytBassInfoInqire'
+BUILD_ID = '2026-H1'
 
-DISTRICTS = {k: sorted(v) for k, v in {
+# ══════════════════════════════════════════════════════════════════
+#  [ROOT-CAUSE 2026-H1] 행정구역 개편 반영
+#   2026-07-01 「전남광주통합특별시 설치 및 지원에 관한 특별법」시행으로
+#   광주광역시와 전라남도가 폐지되고 전남광주통합특별시(광주 5구 + 전남
+#   22시군 = 27개 기초자치단체)로 통합되었다. 주소 표기도
+#     '광주광역시 동구'  → '전남광주통합특별시 동구'
+#     '전라남도 순천시'  → '전남광주통합특별시 순천시'
+#   로 바뀌었다.
+#
+#   ※ 그동안의 '광주 0건' 은 공공API 결함이 아니었다. API 는 정상
+#     (Q0=광주 → 73건)이었고, 앱의 행정구역 테이블이 낡아서
+#     73건 전부가 sido='전라남도' 로 흡수되어 '광주광역시' 건수가
+#     영원히 0 이 되었던 것이다(별칭 '전남' 이 '전남광주통합특별시'
+#     접두를 삼킨 것이 결정타).
+# ══════════════════════════════════════════════════════════════════
+_GJ5 = ['광산구', '남구', '동구', '북구', '서구']                  # 구 광주광역시
+_JN22 = ['목포시', '여수시', '순천시', '나주시', '광양시',
+         '담양군', '곡성군', '구례군', '고흥군', '보성군', '화순군',
+         '장흥군', '강진군', '해남군', '영암군', '무안군', '함평군',
+         '영광군', '장성군', '완도군', '진도군', '신안군']          # 구 전라남도
+SIDO_MERGED = '전남광주통합특별시'
+#  통합시는 '광주권 5구 → 전남권 22시군' 순서를 유지한다(가나다 정렬 제외)
+DISTRICTS = {k: (v if k == SIDO_MERGED else sorted(v)) for k, v in {
     '서울특별시': ['강남구','강동구','강북구','강서구','관악구','광진구','구로구','금천구','노원구','도봉구','동대문구','동작구','마포구','서대문구','서초구','성동구','성북구','송파구','양천구','영등포구','용산구','은평구','종로구','중구','중랑구'],
     '부산광역시': ['강서구','금정구','남구','동구','동래구','부산진구','북구','사상구','사하구','서구','수영구','연제구','영도구','중구','해운대구','기장군'],
     '대구광역시': ['남구','달서구','동구','북구','서구','수성구','중구','달성군'],
     '인천광역시': ['계양구','남구','남동구','동구','부평구','서구','연수구','중구','강화군','옹진군'],
-    '광주광역시': ['광산구','남구','동구','북구','서구'],
+    '전남광주통합특별시': _GJ5 + _JN22,
     '대전광역시': ['대덕구','동구','서구','유성구','중구'],
     '울산광역시': ['남구','동구','북구','중구','울주군'],
     '세종특별자치시': ['세종특별자치시'],
@@ -217,7 +565,6 @@ DISTRICTS = {k: sorted(v) for k, v in {
     '충청북도': ['청주시','충주시','제천시','보은군','옥천군','영동군','증평군','진천군','괴산군','음성군','단양군'],
     '충청남도': ['천안시','공주시','보령시','아산시','서산시','논산시','계룡시','당진시','금산군','부여군','서천군','청양군','홍성군','예산군','태안군'],
     '전북특별자치도': ['전주시','군산시','익산시','정읍시','남원시','김제시','완주군','진안군','무주군','장수군','임실군','순창군','고창군','부안군'],
-    '전라남도': ['목포시','여수시','순천시','나주시','광양시','담양군','곡성군','구례군','고흥군','보성군','화순군','장흥군','강진군','해남군','영암군','무안군','함평군','영광군','장성군','완도군','진도군','신안군'],
     '경상북도': ['포항시','경주시','김천시','안동시','구미시','영주시','영천시','상주시','문경시','경산시','군위군','의성군','청송군','영양군','영덕군','청도군','고령군','성주군','칠곡군','예천군','봉화군','울진군','울릉군'],
     '경상남도': ['창원시','진주시','통영시','사천시','김해시','밀양시','거제시','양산시','의령군','함안군','창녕군','고성군','남해군','하동군','산청군','함양군','거창군','합천군'],
     '제주특별자치도': ['제주시','서귀포시']
@@ -1637,15 +1984,16 @@ HTML = '''
         function kv(k, v) { return '<div class="dt-kv"><span>' + k + '</span><span>' + esc(v || '-') + '</span></div>'; }
         // 실시간 메시지 행 — 좌측열=분류(색상), 본문=같은 색, [진료과목]만 검정
         function kvMsg(m) {
+            /* [2026-H2] 과목=분류색 / 세부내용=검정 (기존과 반전) */
             var col = m.color || '#333';
             var raw = String(m.msg || '-');
             var mm = /^\\[([^\\]]*)\\]\\s*([\\s\\S]*)$/.exec(raw);
             var body = mm
-                ? ('<span style="color:#000;">[' + esc(mm[1]) + ']</span> ' + esc(mm[2]))
-                : esc(raw);
+                ? ('<span style="color:' + col + ';font-weight:700;">[' + esc(mm[1])
+                   + ']</span> <span style="color:#000;">' + esc(mm[2]) + '</span>')
+                : ('<span style="color:#000;">' + esc(raw) + '</span>');
             return '<div class="dt-kv"><span style="color:' + col + ';font-weight:700;">'
-                 + esc(m.label || '-') + '</span><span style="color:' + col + ';">'
-                 + body + '</span></div>';
+                 + esc(m.label || '-') + '</span><span>' + body + '</span></div>';
         }
         function cellRows(obj, labels) {
             var out = '';
@@ -1734,7 +2082,7 @@ HTML = '''
         // ══════════════════════════════════════════════════════════════
         //  병상 포화도
         // ══════════════════════════════════════════════════════════════
-        var _satRows = [], _satAt = '', _satFails = [], _satBusy = false;
+        var _satRows = [], _satAt = '', _satFails = [], _satBusy = false, _satBuild = '';
         var _satFormulaOpen = false, SAT_METRIC = 'er', SORT_DESC = true;
         var satSido = '', satGugun = '';
         var METRIC_LABEL = { er: '응급실', ward: '일반병실', icu: '중환자실', load: '상대 과밀점수' };
@@ -1816,7 +2164,8 @@ HTML = '''
             var scope = (satSido ? satSido + (satGugun ? ' ' + satGugun : '') : '전국');
             if (sub) sub.textContent = lvLabel() + ' · ' + scope + ' · ' + METRIC_LABEL[SAT_METRIC]
                 + ' · ' + list.length + '개 · ' + _satAt
-                + (_satFails.length ? ' · 실패 ' + _satFails.length : '');
+                + (_satFails.length ? ' · 실패 ' + _satFails.length : '')
+                + (_satBuild ? ' · b' + _satBuild : '');
             var html = '<div class="sat-formula' + (_satFormulaOpen ? ' show' : '') + '" id="satFormula">'
                      + satFormulaHtml() + '</div>';
             if (!list.length) { body.innerHTML = html + '<div class="loading">조건에 맞는 병원이 없습니다.</div>'; return; }
@@ -1868,6 +2217,7 @@ HTML = '''
                 /*SRV-SAT-END*/
                 if (!sd.success) throw new Error(sd.error || '포화도 조회 실패');
                 _satRows = sd.rows || []; _satAt = sd.queried_at || ''; _satFails = sd.failed || [];
+                _satBuild = sd.build || '';
                 nsdbg('sat n=' + _satRows.length + ' force=' + !!force + ' ' + (Date.now() - t0) + 'ms');
                 satRender();
             } catch (err) {
@@ -2226,13 +2576,28 @@ COMPARE_WINDOW_HTML = '''
             // 저장본에서는 이 화면이 상위 문서의 iframe(srcdoc) 안에 있다.
             // history.back() 을 쓰면 최상위 문서가 원본 content:// 로 되돌아가
             // 권한 만료로 ERR_FILE_NOT_FOUND 가 난다. 오버레이만 닫는다.
+            var inFrame = false;
+            try { inFrame = !!(window.parent && window.parent !== window); }
+            catch (e) { inFrame = true; }
+            // ① 동일 출처(앱 내부 iframe): 부모 API 직접 호출
             try {
-                if (window.parent && window.parent !== window
-                    && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
+                if (inFrame && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
                     window.parent.EXAPP.closeCompare();
                     return;
                 }
             } catch (e) {}
+            // ② [ROOT-FIX 2026-G2] 저장본의 비교화면은 about:srcdoc 프레임이고,
+            //    부모 문서가 file:// · content:// 이면 opaque origin 이 되어
+            //    window.parent.EXAPP 접근이 SecurityError 로 차단된다.
+            //    → ①이 조용히 실패하고 ③④도 조건 불일치라 [뒤로가기]·[← 병원 선택]
+            //      양쪽이 완전 무반응이 되었다. postMessage 는 교차출처에서도
+            //      동작하므로 프레임 안에서는 이 경로를 정규 경로로 사용한다.
+            if (inFrame) {
+                try {
+                    window.parent.postMessage({ ermonClose: 1 }, '*');
+                    return;
+                } catch (e) {}
+            }
             try {
                 if (location.protocol === 'http:' || location.protocol === 'https:') {
                     location.href = '/';
@@ -2240,12 +2605,13 @@ COMPARE_WINDOW_HTML = '''
                 }
             } catch (e) {}
             try {
-                if (window.top === window && history.length > 1) { history.back(); return; }
+                if (!inFrame && history.length > 1) { history.back(); return; }
             } catch (e) {}
             try { window.close(); } catch (e) {}
         }
         (function () {
             // 백버튼 가로채기는 최상위 문서에서만. iframe 에서 걸면 상위가 이탈한다.
+            //  (프레임일 때는 부모 글루가 popstate 를 잡아 오버레이를 닫는다)
             try {
                 if (window.top !== window) return;
                 history.pushState({ ermon: 1 }, '', location.href);
@@ -3302,9 +3668,18 @@ COMPARE_WINDOW_HTML = '''
         // enterPictureInPictureMode() 호출 순서로 동작.
         // [buildozer.spec 필수] android.add_activity_args 에
         //   android:supportsPictureInPicture="true" 추가 필요
+        //  [로그 2026-H2] 비교화면 이벤트를 통합 로그(ermon.log)로 전송
+        function pipLog(m) {
+            try { console.log('[PiP] ' + m); } catch (e) {}
+            try {
+                fetch('/api/ns_dbg?m=' + encodeURIComponent('[비교화면] ' + m),
+                      { cache: 'no-store' });
+            } catch (e) {}
+        }
         (function() {
             document.getElementById('pipBtn').addEventListener('click', function() {
                 var hParam = new URLSearchParams(location.search).get('h') || '';
+                pipLog('[백그라운드] 버튼 탭');
                 var ivMs   = document.getElementById('refreshInterval').value || '180000';
                 var ivSec  = Math.round(parseInt(ivMs) / 1000);
                 var btn    = document.getElementById('pipBtn');
@@ -3317,21 +3692,59 @@ COMPARE_WINDOW_HTML = '''
                 })
                 .then(function(r) { return r.json(); })
                 .then(function(d) {
-                    if (d.ok) {
-                        btn.textContent = ' PiP 요청됨';
-                        // Kivy가 PiP 진입하면 브라우저는 백그라운드로 전환됨
-                        // 3초 후 버튼 복원 (Kivy PiP 진입 실패 시 대비)
-                        setTimeout(function() {
-                            btn.textContent = ' 백그라운드';
-                            btn.disabled = false;
-                        }, 3000);
-                    } else {
+                    if (!d.ok) {
                         btn.textContent = ' 백그라운드';
                         btn.disabled = false;
+                        return;
                     }
+                    btn.textContent = ' PiP 요청됨';
+                    /* [FIX 2026-H2] 기존에는 요청만 던지고 결과를 알 수 없어
+                       실패해도 '무반응'으로만 보였다. 실제 진입 결과를 폴링해
+                       사유를 즉시 표시하고 통합 로그에도 남긴다. */
+                    var tries = 0;
+                    var poll = setInterval(function () {
+                        tries += 1;
+                        fetch('/api/pip_status', { cache: 'no-store' })
+                        .then(function (r2) { return r2.json(); })
+                        .then(function (st) {
+                            if (st.ok) {
+                                clearInterval(poll);
+                                btn.textContent = ' 백그라운드';
+                                btn.disabled = false;
+                                return;
+                            }
+                            if (st.reason && st.age < 30) {
+                                clearInterval(poll);
+                                btn.textContent = 'PiP 실패';
+                                btn.title = st.reason;
+                                btn.disabled = false;
+                                pipLog('PiP 실패 stage=' + st.stage + ' reason=' + st.reason
+                                       + ' api=' + st.api + ' 기기지원=' + st.device_feature
+                                       + ' 매니페스트=' + st.manifest_flag);
+                                alert('PiP 진입 실패\\n\\n[' + st.stage + ']\\n' + st.reason
+                                      + '\\n\\n매니페스트 선언: ' + st.manifest_flag
+                                      + '\\n기기 지원: ' + st.device_feature
+                                      + '\\n\\n상세 로그: /diag');
+                                return;
+                            }
+                            if (tries >= 8) {
+                                clearInterval(poll);
+                                btn.textContent = ' 백그라운드';
+                                btn.disabled = false;
+                                pipLog('PiP 결과 미확인 (타임아웃) stage=' + st.stage);
+                            }
+                        })
+                        .catch(function () {
+                            /* PiP 진입 성공 시 브라우저가 백그라운드로 밀려
+                               fetch 가 끊기는 것이 정상 동작이다. */
+                            clearInterval(poll);
+                            btn.textContent = ' 백그라운드';
+                            btn.disabled = false;
+                        });
+                    }, 700);
                 })
                 .catch(function(e) {
-                    console.error('[PiP] 요청 실패:', e);
+                    pipLog('요청 실패: ' + e);
                     btn.textContent = ' 백그라운드';
                     btn.disabled = false;
                 });
@@ -3485,14 +3898,27 @@ _REGION_LOCK  = _threading.Lock()
 _SIDO_ALIAS = {
     '서울특별시': ['서울'], '부산광역시': ['부산'],
     '대구광역시': ['대구'], '인천광역시': ['인천'],
-    '광주광역시': ['광주'], '대전광역시': ['대전'],
+    '대전광역시': ['대전'],
     '울산광역시': ['울산'], '세종특별자치시': ['세종', '세종시'],
     '경기도': ['경기'], '강원특별자치도': ['강원', '강원도'],
     '충청북도': ['충북'], '충청남도': ['충남'],
-    '전북특별자치도': ['전북', '전라북도'], '전라남도': ['전남'],
+    '전북특별자치도': ['전북', '전라북도'],
+    #  통합시: API 는 아직 구 표기('광주'·'전남')로만 결과를 준다.
+    #  두 축 결과가 서로 달라(73건 / 72건) 하나만 쓰면 누락되므로 합집합.
+    '전남광주통합특별시': ['전남광주시', '전남광주', '광주특별시',
+                          '광주', '전남', '광주광역시', '전라남도'],
     '경상북도': ['경북'], '경상남도': ['경남'],
     '제주특별자치도': ['제주', '제주도'],
+    #  ↓ 폐지된 시/도. 저장된 구 설정(h 파라미터)·구 주소 호환용으로만 남긴다.
+    '광주광역시': ['광주', '전남광주통합특별시', '전남광주', '전남'],
+    '전라남도': ['전남', '전남광주통합특별시', '전남광주', '광주'],
 }
+
+#  폐지된 시/도 표기 → 현행 시/도 (주소 해석 시 자동 승격)
+_SIDO_LEGACY = {'광주광역시': SIDO_MERGED, '전라남도': SIDO_MERGED}
+
+#  별칭마다 결과 집합이 다른 시/도 → 첫 성공에서 멈추지 않고 합집합
+_UNION_SIDO = {SIDO_MERGED}
 
 _ER_TAGS   = [('hvec', 'HVS01')]
 _WARD_TAGS = [('hvgc', 'HVS38'), ('hv36', 'HVS19'), ('hv37', 'HVS20'), ('hv41', 'HVS25')]
@@ -3625,24 +4051,53 @@ def _list_rows(root, sido_hint=''):
 
 _BytesIO = __import__('io').BytesIO
 
-_SIDO_LOOKUP = None
+_SIDO_EXACT = None
+
+
+def _sido_reset_lookup():
+    """DISTRICTS 가 갱신(자동학습)되면 캐시를 무효화한다."""
+    global _SIDO_EXACT
+    _SIDO_EXACT = None
 
 
 def _sido_of(addr):
-    """주소 앞부분으로 시/도 판별 (별칭 포함)."""
-    global _SIDO_LOOKUP
-    if _SIDO_LOOKUP is None:
-        _SIDO_LOOKUP = []
+    """주소 첫 토큰으로 시/도 판별.
+
+    [ROOT-FIX 2026-H1] 이전에는 startswith() 접두 매칭이라
+      '전남광주통합특별시 동구' 가 별칭 '전남'(2자)에 걸려
+      '전라남도' 로 잘못 분류됐다 → 통합시 병원 전량이 광주에서 소멸.
+    이제 '토큰 정확일치' 를 1순위로 하고, 접두 폴백은 3자 이상
+    정식 표기에만 허용한다(2자 약칭 오탐 차단)."""
+    global _SIDO_EXACT
+    if _SIDO_EXACT is None:
+        m = {}
         for k in DISTRICTS:
-            _SIDO_LOOKUP.append((k, k))
+            m[k] = k
+        for k in DISTRICTS:
             for a in _SIDO_ALIAS.get(k, []):
-                _SIDO_LOOKUP.append((a, k))
-        _SIDO_LOOKUP.sort(key=lambda x: -len(x[0]))
+                m.setdefault(a, k)
+        for ok_, nk in _SIDO_LEGACY.items():          # 폐지 표기 → 현행
+            if nk in DISTRICTS:
+                m[ok_] = nk
+        _SIDO_EXACT = m
     head = (addr or '').strip()
-    for pre, full in _SIDO_LOOKUP:
-        if head.startswith(pre):
-            return full
+    if not head:
+        return ''
+    tok = head.split()[0]
+    hit = _SIDO_EXACT.get(tok)
+    if hit:
+        return hit
+    for pre in sorted((k for k in _SIDO_EXACT if len(k) >= 3),
+                      key=len, reverse=True):
+        if tok.startswith(pre):
+            return _SIDO_EXACT[pre]
     return ''
+
+
+def _addr_head(addr):
+    """주소의 첫 토큰(시/도 자리). 자동학습용."""
+    t = (addr or '').strip().split()
+    return t[0] if t else ''
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3715,9 +4170,304 @@ def _region_api_root(url, sido, gugun='', extra=None, timeout=12, ctx='',
     return last
 
 
+# ══════════════════════════════════════════════════════════════════
+#  [ROOT-FIX 2026-G4] 시/도 파라미터 '축' 전면 탐색기 (probe)
+#
+#  이전 수정은 최종 폴백을 '_fetch_list_nationwide(Q0 없는 전국 페이징)'
+#  에 걸었으나, 그 축이 처음부터 죽어 있으면(필수 파라미터 요구 등)
+#  전 계층이 동시에 0건이 된다 — 광주광역시가 계속 0개였던 이유.
+#  따라서 '어떤 축이 살아 있는지'를 추측하지 않고 전부 시도한다.
+#    ① LIST Q0=정식/별칭        ② LIST Q0+Q1(구단위)
+#    ③ LIST Q1 단독(Q0 없음)     ④ LIST QZ=A / 무파라미터 전국
+#    ⑤ STRM STAGE1=정식/별칭     ⑥ BED STAGE1 / STAGE2 단독 / 전국
+#  성공한 축의 결과는 _PROBE_CACHE 에 보관하고, 모든 시도 결과를
+#  [G4] 로그와 /diag/sido 페이지에 그대로 남긴다(재현 가능한 진단).
+# ══════════════════════════════════════════════════════════════════
+_PROBE_CACHE = {}
+_PROBE_TTL = 600
+_PROBE_LOCK = _threading.Lock()
+
+
+def _probe_try(url, params, timeout=12):
+    """후보 1건 실행 → (item elements, 요약문자열). 예외는 전부 흡수."""
+    p = {'serviceKey': SERVICE_KEY, 'pageNo': '1', 'numOfRows': '400'}
+    p.update(params)
+    try:
+        r = _http_get(url, params=p, timeout=timeout)
+        if r.status_code != 200:
+            return [], 'HTTP %s' % r.status_code
+        root = ET.fromstring(r.content)
+        rc = root.findtext('.//resultCode')
+        msg = (root.findtext('.//resultMsg') or root.findtext('.//returnAuthMsg')
+               or root.findtext('.//errMsg') or root.findtext('.//returnReasonCode') or '')
+        tc = root.findtext('.//totalCount') or '-'
+        its = root.findall('.//item')
+        return its, 'rc=%s total=%s item=%d %s' % (rc, tc, len(its), str(msg)[:48])
+    except Exception as e:
+        return [], 'EXC %s' % str(e)[:70]
+
+
+def _rows_from_list_items(its, sido, hint):
+    """목록 API <item> → 해당 시/도 로스터 레코드만 추출."""
+    out = []
+    for it in its:
+        try:
+            r = _list_row(it, hint)
+        except Exception:
+            r = None
+        if r and r['sido'] == sido:
+            out.append(r)
+    return out
+
+
+def _rows_from_idname_items(its, sido):
+    """주소가 없는 응답(중증질환/병상 API) → 최소 로스터 레코드.
+    포화도 화면은 hpid/name/sido/level 만 있으면 표출 가능하다."""
+    out, seen = [], set()
+    for it in its:
+        hp = (it.findtext('hpid') or '').strip()
+        if not hp or hp in seen:
+            continue
+        seen.add(hp)
+        nm = (it.findtext('dutyName') or '').strip() or hp
+        ad = (it.findtext('dutyAddr') or '').strip()
+        sd = _sido_of(ad) or sido
+        if sd != sido:
+            continue
+        out.append({
+            'hpid': hp, 'name': nm, 'dutyAddr': ad,
+            'dutyTel1': (it.findtext('dutyTel1') or '').strip(),
+            'dutyTel3': (it.findtext('dutyTel3') or '').strip(),
+            'emcls': '', 'emclsName': '',
+            'level': _get_hospital_level('', nm),
+            'sido': sido, 'gugun': _split_gugun(sido, ad),
+        })
+    return out
+
+
+_HPID_INFO = {}
+_HPID_LOCK = _threading.Lock()
+
+
+def _hpid_info(hpid):
+    """HPID 단건 기본정보 → 로스터 레코드(주소·종별 포함). 결과는 영구 캐시."""
+    with _HPID_LOCK:
+        if hpid in _HPID_INFO:
+            return _HPID_INFO[hpid]
+    row = None
+    try:
+        its, _meta = _probe_try(BASS_API_URL, {'HPID': hpid, 'numOfRows': '10'}, 10)
+        for it in its:
+            r = _list_row(it, '')
+            if r and r['sido']:
+                row = r
+                break
+    except Exception:
+        row = None
+    with _HPID_LOCK:
+        _HPID_INFO[hpid] = row
+    return row
+
+
+def _rows_by_hpid_lookup(its, sido, limit=150):
+    """[SAFETY 2026-G4] 주소 없는 응답(STRM·BED)은 질의 파라미터만 믿고
+    시/도를 붙이면 오분류된다(예: STAGE2=동구 는 전국의 모든 '동구'를 준다).
+    → hpid 를 기관 기본정보로 역조회해 '실제 주소'로만 소속을 확정한다."""
+    seen, out, n, miss = set(), [], 0, 0
+    for it in its:
+        hp = (it.findtext('hpid') or '').strip()
+        if not hp or hp in seen:
+            continue
+        seen.add(hp)
+        ad = (it.findtext('dutyAddr') or '').strip()
+        if ad and _sido_of(ad) == sido:            # 주소가 실려온 경우 즉시 채택
+            r = _list_row(it, sido)
+            if r:
+                out.append(r)
+            continue
+        if ad:                                     # 주소가 있는데 타 시/도
+            continue
+        if n >= limit:
+            miss += 1
+            continue
+        n += 1
+        r = _hpid_info(hp)
+        if r and r['sido'] == sido:
+            out.append(r)
+    if miss:
+        _ns_dbg('[G4] %s hpid역조회 상한(%d) 초과 %d건 미해석' % (sido, limit, miss))
+    return out
+
+
+def _hpid_set(its):
+    out = set()
+    for it in its:
+        h = (it.findtext('hpid') or '').strip()
+        if h:
+            out.add(h)
+    return out
+
+
+def _filter_honored(url, key, val, sido, its, timeout=10):
+    """[SAFETY 2026-G4] 주소가 없는 응답(STRM·BED)은 '이 시/도 소속'을
+    질의 파라미터만 믿고 라벨링하게 된다. 만약 API 가 그 필터를 무시하고
+    전국을 돌려주면 전혀 다른 지역 병원이 이 시/도로 오분류된다.
+    → 다른 시/도 값으로 같은 질의를 1회 더 던져 hpid 집합이 동일하면
+      '필터 무시'로 판정하고 해당 축을 폐기한다."""
+    try:
+        a = _hpid_set(its)
+        if not a:
+            return False, '결과없음'
+        ctrl = '제주특별자치도' if sido != '제주특별자치도' else '서울특별시'
+        b_its, _m = _probe_try(url, {key: ctrl, 'numOfRows': '400'}, timeout)
+        b = _hpid_set(b_its)
+        if b and a == b:
+            return False, '※%s 필터무시(대조군 %s 동일) → 폐기' % (key, ctrl)
+        return True, ''
+    except Exception as e:
+        return False, '대조군검증 예외 %s' % str(e)[:40]
+
+
+def _probe_sido(sido, full=False, timeout=10):
+    """모든 축을 순차 시도. full=True 면 성공해도 끝까지(진단 페이지용).
+    반환 (rows, trace). 절대 예외를 던지지 않는다."""
+    gus = DISTRICTS.get(sido) or []
+    vs = _sido_variants(sido)
+    trace, best, best_by = [], [], ''
+
+    def note(label, meta, rows):
+        trace.append({'q': label, 'meta': meta, 'n': len(rows)})
+        _ns_dbg('[G4] %s | %s | %s | rows=%d' % (sido, label, meta, len(rows)))
+
+    def stop():
+        return bool(best) and not full
+
+    # ① LIST Q0=정식/별칭
+    for q in vs:
+        if stop():
+            break
+        its, meta = _probe_try(LIST_API_URL, {'Q0': q, 'numOfRows': '500'}, timeout)
+        rows = _rows_from_list_items(its, sido, sido)
+        note('LIST Q0=%s' % q, meta, rows)
+        if rows and not best:
+            best, best_by = rows, 'LIST Q0=%s' % q
+    # ② LIST Q0+Q1 (구단위 합집합)
+    for q in vs:
+        if stop():
+            break
+        merged, seen, metas = [], set(), []
+        for g in gus:
+            its, meta = _probe_try(LIST_API_URL,
+                                   {'Q0': q, 'Q1': g, 'numOfRows': '200'}, timeout)
+            metas.append('%s:%d' % (g, len(its)))
+            for r in _rows_from_list_items(its, sido, sido):
+                if r['hpid'] not in seen:
+                    seen.add(r['hpid'])
+                    merged.append(r)
+        note('LIST Q0=%s+Q1' % q, ' '.join(metas)[:120], merged)
+        if merged and not best:
+            best, best_by = merged, 'LIST Q0=%s+Q1' % q
+    # ③ LIST Q1 단독 (Q0 없음) — 시/도 축이 통째로 고장난 경우용
+    if not stop():
+        merged, seen, metas = [], set(), []
+        for g in gus:
+            its, meta = _probe_try(LIST_API_URL, {'Q1': g, 'numOfRows': '300'}, timeout)
+            metas.append('%s:%d' % (g, len(its)))
+            for r in _rows_from_list_items(its, sido, ''):
+                if r['hpid'] not in seen:
+                    seen.add(r['hpid'])
+                    merged.append(r)
+        note('LIST Q1단독(Q0없음)', ' '.join(metas)[:120], merged)
+        if merged and not best:
+            best, best_by = merged, 'LIST Q1단독'
+    # ④ LIST 전국 (QZ=A / 무파라미터)
+    for lab, pr in (('LIST QZ=A 전국', {'QZ': 'A', 'numOfRows': '500'}),
+                    ('LIST 무파라미터 전국', {'numOfRows': '500'})):
+        if stop():
+            break
+        its, meta = _probe_try(LIST_API_URL, pr, timeout + 5)
+        rows = _rows_from_list_items(its, sido, '')
+        note(lab, meta, rows)
+        if rows and not best:
+            best, best_by = rows, lab
+    # ⑤ STRM(중증질환자 수용정보) STAGE1 — 다른 백엔드 테이블
+    for q in vs:
+        if stop():
+            break
+        its, meta = _probe_try(STRM_API_URL, {'STAGE1': q}, timeout)
+        rows = []
+        if its:
+            ok, why = _filter_honored(STRM_API_URL, 'STAGE1', q, sido, its, timeout)
+            if ok:
+                rows = _rows_by_hpid_lookup(its, sido)
+            else:
+                meta += ' ' + why
+        note('STRM STAGE1=%s' % q, meta, rows)
+        if rows and not best:
+            best, best_by = rows, 'STRM STAGE1=%s' % q
+    # ⑥ BED(실시간병상) STAGE1 / STAGE2단독 / 전국
+    for q in vs:
+        if stop():
+            break
+        its, meta = _probe_try(API_URL, {'STAGE1': q, 'numOfRows': '400'}, timeout)
+        rows = []
+        if its:
+            ok, why = _filter_honored(API_URL, 'STAGE1', q, sido, its, timeout)
+            if ok:
+                rows = _rows_by_hpid_lookup(its, sido)
+            else:
+                meta += ' ' + why
+        note('BED STAGE1=%s' % q, meta, rows)
+        if rows and not best:
+            best, best_by = rows, 'BED STAGE1=%s' % q
+    if not stop():
+        pool, metas, sets = [], [], []
+        for g in gus:
+            its, meta = _probe_try(API_URL, {'STAGE2': g, 'numOfRows': '200'}, timeout)
+            metas.append('%s:%d' % (g, len(its)))
+            sets.append(frozenset(_hpid_set(its)))
+            pool.extend(its)
+        #  구마다 완전히 같은 집합이면 STAGE2 가 무시된 것 → 전국 오분류 방지
+        if len(sets) >= 2 and sets[0] and all(x == sets[0] for x in sets):
+            pool = []
+            metas.append('※STAGE2 필터무시(구별 결과 동일) → 폐기')
+        #  '동구·남구' 등은 전국 여러 시/도에 존재하므로 질의값을 믿으면 안 된다.
+        #  hpid 기본정보 역조회로 실제 주소를 확인해 소속을 확정한다.
+        merged = _rows_by_hpid_lookup(pool, sido) if pool else []
+        note('BED STAGE2단독(STAGE1없음)', ' '.join(metas)[:140], merged)
+        if merged and not best:
+            best, best_by = merged, 'BED STAGE2단독'
+    if not stop():
+        its, meta = _probe_try(API_URL, {'numOfRows': '500'}, timeout + 5)
+        #  전국 응답은 주소가 없으므로 hpid 역조회로만 귀속 확정 (상한 적용)
+        rows = _rows_by_hpid_lookup(its, sido, limit=200) if its else []
+        note('BED 무파라미터 전국', meta, rows)
+        if rows and not best:
+            best, best_by = rows, 'BED 무파라미터 전국'
+
+    _ns_dbg('[G4] %s PROBE 종료 → %d건 (승리축: %s)'
+            % (sido, len(best), best_by or '없음'))
+    return best, trace
+
+
+def _probe_sido_cached(sido):
+    now = time.time()
+    with _PROBE_LOCK:
+        ent = _PROBE_CACHE.get(sido)
+    if ent and (now - ent[0] < _PROBE_TTL) and ent[1]:
+        return ent[1]
+    rows, _tr = _probe_sido(sido, full=False)
+    with _PROBE_LOCK:
+        _PROBE_CACHE[sido] = (time.time(), rows)
+    return rows
+
+
 def _fetch_sido_list(sido):
     """단일 시/도 목록. 별칭 → 구단위 순으로 폴백. 절대 예외를 던지지 않는다."""
     # ① Q0(정식/별칭) 페이징
+    #  통합시는 '광주'·'전남' 두 축이 서로 다른 부분집합을 주므로 합집합
+    _union = sido in _UNION_SIDO
+    _acc, _accseen = [], set()
     for q in _sido_variants(sido):
         rows, page = [], 1
         while page <= 5:
@@ -3738,8 +4488,17 @@ def _fetch_sido_list(sido):
             page += 1
         if rows:
             if q != sido:
-                _ns_dbg(' %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(rows)))
-            return rows
+                _ns_dbg(' %s: 별칭 "%s" 로 %d건' % (sido, q, len(rows)))
+            if not _union:
+                return rows
+            for _r in rows:
+                if _r['hpid'] not in _accseen:
+                    _accseen.add(_r['hpid'])
+                    _acc.append(_r)
+    if _union and _acc:
+        _ns_dbg(' %s: 별칭 %d개 합집합 → %d건'
+                % (sido, len(_sido_variants(sido)), len(_acc)))
+        return _acc
     # ② Q0 가 0건/오류만 주는 시/도 → Q1(시/군/구) 단위 합집합
     gus = DISTRICTS.get(sido) or []
     if not gus:
@@ -3764,7 +4523,20 @@ def _fetch_sido_list(sido):
         if merged:
             _ns_dbg(' %s: 구단위 재조회로 %d건 복구 (Q0="%s")' % (sido, len(merged), q))
             return merged
-    _ns_dbg(' %s: 시/도·별칭·구단위 모두 0건' % sido)
+    # ③ [ROOT-FIX 2026-G1] Q0/Q1 필터 자체가 고장난 경우 → 전국 스냅샷에서
+    #    주소 기준으로 추출 (시/도 파라미터를 전혀 쓰지 않는 유일한 경로)
+    try:
+        pick = [h for h in _nat_list_cached() if h.get('sido') == sido]
+    except Exception as _pe:
+        pick = []
+        _ns_dbg(' %s: 전국스냅샷 폴백 예외 %s' % (sido, _pe))
+    if pick:
+        _ns_dbg(' %s: 전국스냅샷에서 %d건 복구' % (sido, len(pick)))
+        return pick
+    #  ④ 파라미터 축 전면탐색(probe)은 /diag/sido 수동 진단 전용으로 분리했다.
+    #     자동 경로에 두면 최대 수십 회 호출로 응답이 지연되고, 실제 원인은
+    #     API 가 아니라 행정구역 테이블이었다(2026-H1).
+    _ns_dbg(' %s: Q0·별칭·구단위·전국 모두 0건 → /diag/sido 로 진단 필요' % sido)
     return []
 
 
@@ -3780,6 +4552,136 @@ def _fetch_list_nationwide():
             break
         page += 1
     return rows
+
+
+# ══════════════════════════════════════════════════════════════════
+#  [ROOT-FIX 2026-G1] 시/도 필터 무관 전국 스냅샷 (목록/병상 공용)
+#
+#  근본원인: Q0/STAGE1(시/도) 필터가 광주광역시·전라남도에서 0건을
+#   반환한다. 기존 폴백(별칭·구단위)은 전부 '같은 고장난 필터'를 다시
+#   쓰므로 필터 자체가 죽으면 전 계층이 동시에 0건이 된다.
+#   → 포화도(과밀지수) 화면은 로스터 캐시만 보므로 광주가 통째로 사라졌다.
+#     (지역검색은 라이브 폴백이 있어 증상이 가려져 있었다)
+#  대책: '시/도 파라미터를 아예 쓰지 않는' 전국 페이징 결과를 캐시해
+#   목록·병상 양쪽의 최종 폴백으로 삼는다. 주소/hpid 로 사후 분류한다.
+# ══════════════════════════════════════════════════════════════════
+_NAT_LIST = {'ts': 0.0, 'rows': []}
+_NAT_BEDS = {'ts': 0.0, 'map': {}}
+_NAT_LIST_TTL = 300
+_NAT_BEDS_TTL = 90
+_NAT_LOCK = _threading.Lock()
+#  17개 시/도가 동시에 폴백에 진입해도 전국조회는 1회만 나가도록 직렬화
+#  (Android 소켓/메모리 폭주 = 과거 ERR_CONNECTION_REFUSED 의 직접 원인)
+_NAT_FETCH_LIST_LOCK = _threading.Lock()
+_NAT_FETCH_BEDS_LOCK = _threading.Lock()
+
+
+def _nat_list_cached(force=False):
+    """전국 기관목록 스냅샷 (Q0 미사용). 실패 시 직전 캐시 유지."""
+    now = time.time()
+    with _NAT_LOCK:
+        rows, ts = _NAT_LIST['rows'], _NAT_LIST['ts']
+    if (not force) and rows and (now - ts < _NAT_LIST_TTL):
+        return rows
+    with _NAT_FETCH_LIST_LOCK:
+        with _NAT_LOCK:                       # 대기 중 다른 스레드가 채웠으면 재사용
+            rows, ts = _NAT_LIST['rows'], _NAT_LIST['ts']
+        if rows and (time.time() - ts < _NAT_LIST_TTL):
+            return rows
+        try:
+            got = _fetch_list_nationwide()
+        except Exception as e:
+            _ns_dbg('[NAT] 전국목록 실패 %s' % e)
+            return rows
+        if got:
+            with _NAT_LOCK:
+                _NAT_LIST['rows'] = got
+                _NAT_LIST['ts'] = time.time()
+            _ns_dbg('[NAT] 전국목록 %d건 캐시' % len(got))
+            return got
+        return rows
+
+
+def _fetch_beds_nationwide():
+    """STAGE1 없이 전국 실시간병상 페이징. {hpid: bedrow}"""
+    out, page = {}, 1
+    while page <= 4:
+        params = {'serviceKey': SERVICE_KEY, 'pageNo': str(page), 'numOfRows': '500'}
+        total = -1
+        n0 = len(out)
+        for it, tc in _api_items(_http_get(API_URL, params=params, timeout=20),
+                                 'bed-all p%d' % page):
+            if tc >= 0:
+                total = tc
+            hpid = (it.findtext('hpid') or '').strip()
+            if hpid and hpid not in out:
+                out[hpid] = _bed_item_row(it)
+        if len(out) == n0 or (total >= 0 and page * 500 >= total):
+            break
+        page += 1
+    return out
+
+
+def _nat_beds_cached(force=False):
+    """전국 병상 스냅샷 (STAGE1 미사용). 실패 시 직전 캐시 유지."""
+    now = time.time()
+    with _NAT_LOCK:
+        m, ts = _NAT_BEDS['map'], _NAT_BEDS['ts']
+    if (not force) and m and (now - ts < _NAT_BEDS_TTL):
+        return m
+    with _NAT_FETCH_BEDS_LOCK:
+        with _NAT_LOCK:                       # 대기 중 다른 스레드가 채웠으면 재사용
+            m, ts = _NAT_BEDS['map'], _NAT_BEDS['ts']
+        if m and (time.time() - ts < _NAT_BEDS_TTL):
+            return m
+        try:
+            got = _fetch_beds_nationwide()
+        except Exception as e:
+            _ns_dbg('[NAT] 전국병상 실패 %s' % e)
+            return m
+        if got:
+            with _NAT_LOCK:
+                _NAT_BEDS['map'] = got
+                _NAT_BEDS['ts'] = time.time()
+            _ns_dbg('[NAT] 전국병상 %d건 캐시' % len(got))
+            return got
+        return m
+
+
+def _learn_admin(rows):
+    """[재발방지 2026-H1] 주소 데이터를 진실의 원천으로 삼아, DISTRICTS 에
+    없는 시/도 표기가 나타나면 자동 등록하고 강한 경고를 남긴다.
+
+    이번 사고(전남광주통합특별시 신설)처럼 행정구역이 개편되면
+    하드코딩 테이블만 믿는 코드는 해당 지역을 통째로 잃는다.
+    이제는 앱이 스스로 따라가고, 사람이 즉시 알아챌 수 있게 기록한다."""
+    unknown = {}
+    for h in rows:
+        if h.get('sido'):
+            continue
+        head = _addr_head(h.get('dutyAddr'))
+        if len(head) < 3:
+            continue
+        unknown.setdefault(head, []).append(h)
+    added = []
+    for head, hs in unknown.items():
+        if len(hs) < 2:                       # 오타·1회성 표기는 무시
+            continue
+        gus = set()
+        for h in hs:
+            t = (h.get('dutyAddr') or '').split()
+            if len(t) >= 2 and t[1][-1:] in ('시', '군', '구'):
+                gus.add(t[1])
+        DISTRICTS[head] = sorted(gus) if gus else [head]
+        _sido_reset_lookup()
+        for h in hs:
+            h['sido'] = head
+            h['gugun'] = _split_gugun(head, h.get('dutyAddr'))
+        added.append('%s(%d건·하위%d)' % (head, len(hs), len(DISTRICTS[head])))
+    if added:
+        _ulog('ADMIN', '★ 미등록 시/도 자동등록: ' + ' / '.join(added)
+              + '  ← 행정구역 개편으로 보임. 소스 DISTRICTS 갱신 필요.')
+    return bool(added)
 
 
 def _all_hospitals(force=False):
@@ -3800,7 +4702,7 @@ def _all_hospitals(force=False):
     _ns_dbg('roster fetch START force=%s' % force)
     rows, fails = [], []
     futs = {_NET_POOL.submit(_fetch_sido_list, s): s for s in DISTRICTS}
-    futs[_NET_POOL.submit(_fetch_list_nationwide)] = '*전국'
+    futs[_NET_POOL.submit(_nat_list_cached)] = '*전국'
     for f in as_completed(futs):
         s = futs[f]
         try:
@@ -3832,7 +4734,21 @@ def _all_hospitals(force=False):
         return m
 
     uniq = _dedup(rows)
+    #  [진단 2026-H1] 미분류 주소 자동학습 → 분포를 매번 로그에 남긴다.
+    #   '어느 시/도가 몇 건인지'가 파일에 남아야 이번 같은 오진을 반복하지 않는다.
+    try:
+        _learn_admin(uniq)
+    except Exception as _le2:
+        _ulog('ADMIN', '자동학습 예외 %s' % _le2)
     by_sido = _by_sido(uniq)
+    try:
+        _unk = sum(1 for h in uniq if not h.get('sido'))
+        _ulog('ADMIN', '로스터 분포(n=%d): %s%s'
+              % (len(uniq),
+                 ' '.join('%s=%d' % (k, by_sido.get(k, 0)) for k in DISTRICTS),
+                 (' | 미분류=%d' % _unk) if _unk else ''))
+    except Exception:
+        pass
     missing = [k for k in DISTRICTS if by_sido.get(k, 0) == 0]
 
     # ── [ROOT-FIX 2026-D2] 0건 시/도 순차 재조회 (동시호출 폭주 회피) ──
@@ -3866,10 +4782,131 @@ def _all_hospitals(force=False):
     return uniq, fails, False
 
 
+@flask_app.route('/diag/sido')
+def diag_sido():
+    """[2026-G4] 특정 시/도에 대해 모든 파라미터 축을 실제로 호출해
+    resultCode·totalCount·item수를 그대로 보여준다. 추측 제거용.
+    사용: http://127.0.0.1:5000/diag/sido?sido=광주광역시"""
+    sido = (request.args.get('sido') or '광주광역시').strip()
+    t0 = time.time()
+    try:
+        rows, trace = _probe_sido(sido, full=True, timeout=8)
+        err = ''
+    except Exception as e:
+        rows, trace, err = [], [], str(e)
+    el = time.time() - t0
+    with _ALL_CACHE_LOCK:
+        rcnt = len(_ALL_CACHE.get('data') or [])
+        rmiss = list(_ALL_CACHE.get('missing') or [])
+        rage = int(time.time() - (_ALL_CACHE.get('ts') or 0))
+    rsido = 0
+    with _ALL_CACHE_LOCK:
+        for h in (_ALL_CACHE.get('data') or []):
+            if h.get('sido') == sido:
+                rsido += 1
+    lines = ['BUILD=%s  sido=%s  %.1fs' % (BUILD_ID, sido, el),
+             '통합 로그: %s' % _log_path(),
+             '로스터캐시: 전체 %d건 / %s %d건 / age %ds / missing=%s'
+             % (rcnt, sido, rsido, rage, ','.join(rmiss) or '-'),
+             '-' * 72]
+    for t in trace:
+        lines.append('%-26s | %-52s | rows=%d' % (t['q'][:26], t['meta'][:52], t['n']))
+    lines.append('-' * 72)
+    with _HPID_LOCK:
+        _hn = len(_HPID_INFO)
+        _hok = sum(1 for v in _HPID_INFO.values() if v)
+    lines.append('HPID 기본정보 역조회: 시도 %d건 / 성공 %d건' % (_hn, _hok))
+    lines.append('PROBE 최종: %d건' % len(rows))
+    for r in rows[:40]:
+        lines.append('  %s %s [%s] %s' % (r['hpid'], r['name'], r['level'],
+                                          r.get('dutyAddr') or '(주소없음)'))
+    if err:
+        lines.append('EXC: ' + err)
+    txt = '\n'.join(lines)
+    _ns_dbg('[G4] diag %s 완료 %d건 %.1fs' % (sido, len(rows), el))
+    body = ('<!doctype html><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>diag %s</title>'
+            '<style>body{font-family:monospace;font-size:12px;margin:8px;}'
+            'textarea{width:100%%;height:60vh;font-family:monospace;font-size:11px;}'
+            'button{padding:8px 14px;font-size:14px;margin:4px 4px 8px 0;}'
+            'a{font-size:13px;}</style>'
+            '<button onclick="navigator.clipboard.writeText('
+            'document.getElementById(&quot;t&quot;).value)">전체 복사</button>'
+            '<a href="/">← 홈</a><br>'
+            '<textarea id="t" readonly>%s</textarea>') % (
+                sido, txt.replace('&', '&amp;').replace('<', '&lt;'))
+    return body
+
+
+@flask_app.errorhandler(Exception)
+def _flask_crash(e):
+    """[일원화 2026-H1] 라우트에서 새어 나온 예외를 전부 통합 로그에 남긴다.
+    (이전에는 500 만 반환되고 원인이 어느 파일에도 남지 않았다)"""
+    import traceback as _tb
+    try:
+        _ulog('CRASH', 'FLASK %s %s -> %s\n%s'
+              % (request.method, request.full_path, e, _tb.format_exc()))
+    except Exception:
+        pass
+    code = getattr(e, 'code', 500)
+    if not isinstance(code, int):
+        code = 500
+    return jsonify({'success': False, 'error': str(e), 'build': BUILD_ID}), code
+
+
+@flask_app.route('/diag')
+def diag_home():
+    """[진단 2026-H1] 단일 진단 화면 — 빌드/경로/로스터 분포/최근 로그.
+    http://127.0.0.1:5000/diag"""
+    with _ALL_CACHE_LOCK:
+        base = list(_ALL_CACHE.get('data') or [])
+        age = int(time.time() - (_ALL_CACHE.get('ts') or 0))
+        miss = list(_ALL_CACHE.get('missing') or [])
+    cnt = {}
+    for h in base:
+        cnt[h.get('sido') or '(미분류)'] = cnt.get(h.get('sido') or '(미분류)', 0) + 1
+    L = ['BUILD=%s   %s' % (BUILD_ID, datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+         '통합 로그   : %s (%s)' % (_log_path(), _log_size_str()),
+         '통합 상태   : %s' % _state_path(),
+         '로그 중복   : %s' % (_log_strays() or '없음'),
+         '로스터      : %d건 / age %ds / missing=%s' % (len(base), age, ','.join(miss) or '-'),
+         '',
+         '[PiP 최근 시도]',
+         '  단계        : %s' % (_PIP_LAST.get('stage') or '-'),
+         '  성공        : %s' % _PIP_LAST.get('ok'),
+         '  실패사유    : %s' % (_PIP_LAST.get('reason') or '-'),
+         '  API레벨     : %s' % _PIP_LAST.get('api'),
+         '  기기지원    : %s' % _PIP_LAST.get('device_feature'),
+         '  매니페스트  : %s  (false 면 Pydroid3 등 PiP 미선언 호스트)'
+         % _PIP_LAST.get('manifest_flag'),
+         '  h_param     : %s' % (_pip_state.get('h_param') or '-')[:60],
+         '',
+         '[시/도 분포]']
+    for k in list(DISTRICTS.keys()) + ['(미분류)']:
+        if k in cnt or k in DISTRICTS:
+            L.append('  %-16s %d' % (k, cnt.get(k, 0)))
+    L += ['', '[최근 로그 %d줄]' % len(_LOG_RING)]
+    L += list(_LOG_RING)
+    txt = '\n'.join(L).replace('&', '&amp;').replace('<', '&lt;')
+    return ('<!doctype html><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>ERmon diag</title>'
+            '<style>body{font-family:monospace;font-size:12px;margin:8px;}'
+            'textarea{width:100%;height:70vh;font-family:monospace;font-size:11px;}'
+            'button,a{padding:8px 12px;font-size:14px;margin:4px 6px 8px 0;'
+            'display:inline-block;}</style>'
+            '<button onclick="navigator.clipboard.writeText('
+            'document.getElementById(&quot;t&quot;).value)">전체 복사</button>'
+            '<a href="/diag/sido?sido=' + SIDO_MERGED + '">시/도 축 진단</a>'
+            '<a href="/">홈</a><br>'
+            '<textarea id="t" readonly>' + txt + '</textarea>')
+
+
 @flask_app.route('/api/ns_dbg')
 def api_ns_dbg():
     """클라이언트(JS) 디버그 라인을 서버 로그 파일로 전달."""
-    _ns_dbg('JS ' + request.args.get('m', ''))
+    _ulog('JS', request.args.get('m', ''))
     return ('', 204)
 
 
@@ -3975,6 +5012,8 @@ def _fetch_sido_beds(sido):
     """단일 시/도 실시간 병상. 별칭 → 구단위(STAGE2) 순 폴백.
     ROOT-FIX: 기존에는 (a) 예외가 별칭 루프를 탈출시키고 (b) 목록조회에만
     있던 구단위 폴백이 병상조회에는 없어 광주/전남 병상이 통째로 비었다."""
+    _union = sido in _UNION_SIDO
+    _acc = {}
     for q in _sido_variants(sido):
         params = {'serviceKey': SERVICE_KEY, 'STAGE1': q, 'pageNo': '1', 'numOfRows': '400'}
         out = {}
@@ -3989,8 +5028,14 @@ def _fetch_sido_beds(sido):
             continue
         if out:
             if q != sido:
-                _ns_dbg(' bed %s: 별칭 "%s" 로 %d건 복구' % (sido, q, len(out)))
-            return out
+                _ns_dbg(' bed %s: 별칭 "%s" 로 %d건' % (sido, q, len(out)))
+            if not _union:
+                return out
+            for _k, _v in out.items():
+                _acc.setdefault(_k, _v)
+    if _union and _acc:
+        _ns_dbg(' bed %s: 별칭 합집합 → %d건' % (sido, len(_acc)))
+        return _acc
     # ── STAGE1 이 0건만 주는 시/도 → STAGE2(시/군/구) 단위 합집합 ──
     gus = DISTRICTS.get(sido) or []
     for q in _sido_variants(sido):
@@ -4011,7 +5056,39 @@ def _fetch_sido_beds(sido):
             _ns_dbg(' bed %s: 구단위 재조회로 %d건 복구 (STAGE1="%s")'
                     % (sido, len(merged), q))
             return merged
-    _ns_dbg(' bed %s: 시/도·별칭·구단위 모두 0건' % sido)
+    # ③ [ROOT-FIX 2026-G1] STAGE1/STAGE2 필터가 고장난 시/도 → 전국 스냅샷에서
+    #    해당 시/도 소속 hpid 만 추출 (병상 API 는 주소가 없으므로 로스터로 대조)
+    try:
+        ids = set(h['hpid'] for h in _nat_list_cached() if h.get('sido') == sido)
+        if not ids:
+            with _ALL_CACHE_LOCK:
+                _base = _ALL_CACHE.get('data') or []
+            ids = set(h['hpid'] for h in _base if h.get('sido') == sido)
+        nb = _nat_beds_cached() if ids else {}
+        pick = {k: v for k, v in nb.items() if k in ids}
+    except Exception as _pe:
+        pick = {}
+        _ns_dbg(' bed %s: 전국스냅샷 폴백 예외 %s' % (sido, _pe))
+    if pick:
+        _ns_dbg(' bed %s: 전국스냅샷에서 %d건 복구' % (sido, len(pick)))
+        return pick
+    # ④ [ROOT-FIX 2026-G4] STAGE1 축을 아예 빼고 STAGE2(시군구)만으로 조회
+    merged = {}
+    for gu in (DISTRICTS.get(sido) or []):
+        try:
+            for it, _tc in _api_items(_http_get(API_URL, params={
+                    'serviceKey': SERVICE_KEY, 'STAGE2': gu,
+                    'pageNo': '1', 'numOfRows': '200'}, timeout=15),
+                    'bed STAGE2=%s' % gu):
+                hpid = (it.findtext('hpid') or '').strip()
+                if hpid and hpid not in merged:
+                    merged[hpid] = _bed_item_row(it)
+        except Exception as _s2e:
+            _ns_dbg(' bed %s/%s: STAGE2단독 실패 %s' % (sido, gu, _s2e))
+    if merged:
+        _ns_dbg(' bed %s: STAGE2단독으로 %d건 복구' % (sido, len(merged)))
+        return merged
+    _ns_dbg(' bed %s: 전 축(STAGE1·별칭·구단위·전국·STAGE2단독) 모두 0건' % sido)
     return {}
 
 
@@ -4145,6 +5222,7 @@ def api_bed_saturation():
     if (not force) and rows and (now - ts < _SAT_TTL):
         _ns_dbg('sat cache HIT n=%d age=%ds' % (len(rows), int(now - ts)))
         return jsonify({'success': True, 'cached': True, 'queried_at': at,
+                        'build': BUILD_ID,
                         'failed': fl, 'count': len(rows), 'rows': rows})
 
     t0 = time.time()
@@ -4154,6 +5232,39 @@ def api_bed_saturation():
     if not base:
         return jsonify({'success': False,
                         'error': '기관 목록 조회 실패: ' + '; '.join(base_fails[:3])})
+
+    #  [ROOT-FIX 2026-G1] 포화도 화면은 로스터 캐시만 보므로, 0건 시/도가
+    #   남아 있으면 그 지역(광주광역시 등)이 화면에서 통째로 사라진다.
+    #   지역검색에만 있던 라이브 폴백을 여기에도 동일 적용한다.
+    _cnt = {}
+    for _h in base:
+        _cnt[_h.get('sido')] = _cnt.get(_h.get('sido'), 0) + 1
+    _miss_sd = [k for k in DISTRICTS if _cnt.get(k, 0) == 0]
+    if _miss_sd:
+        _ns_dbg('[SAT] 로스터 0건 시/도 %s → 라이브 복구 시도' % _miss_sd)
+        _seen = set(h['hpid'] for h in base)
+        _add = 0
+        for _sd in _miss_sd:
+            try:
+                _got = _fetch_sido_list(_sd)
+            except Exception as _se:
+                _got = []
+                _ns_dbg('[SAT] %s 라이브 복구 예외 %s' % (_sd, _se))
+            for _h in _got:
+                if _h['hpid'] not in _seen:
+                    _seen.add(_h['hpid'])
+                    base.append(_h)
+                    _add += 1
+            _ns_dbg('[SAT] repair %s: %d건' % (_sd, len(_got)))
+        if _add:
+            base = sorted(base, key=lambda x: (x['sido'], x['gugun'], x['name']))
+            with _ALL_CACHE_LOCK:
+                _ALL_CACHE['data'] = base
+                _ALL_CACHE['ts'] = time.time()
+                _ALL_CACHE['ttl'] = _ALL_CACHE_TTL_SHORT
+                _ALL_CACHE['missing'] = [k for k in DISTRICTS
+                                         if not any(h.get('sido') == k for h in base)]
+            _ns_dbg('[SAT] 로스터 라이브 복구 +%d건 (총 %d)' % (_add, len(base)))
 
     _ns_dbg('sat fetch START force=%s (batch=%d)' % (force, _SAT_BATCH))
     beds, fails = {}, []
@@ -4171,6 +5282,23 @@ def api_bed_saturation():
                 fails.append('%s: %s' % (sd, e))
                 _ns_dbg(' sat %s: FAIL %s' % (sd, e))
         futs.clear()
+
+    #  [ROOT-FIX 2026-G1] STAGE1 이 죽은 시/도의 병상이 통째로 비는 것을
+    #   막기 위해, 로스터에는 있으나 병상이 없는 hpid 를 전국 스냅샷으로 보충.
+    try:
+        _lack = [h['hpid'] for h in base if h['hpid'] not in beds]
+        if _lack:
+            _nb = _nat_beds_cached(force)
+            _fill = 0
+            for _hp in _lack:
+                _row = _nb.get(_hp)
+                if _row:
+                    beds[_hp] = _row
+                    _fill += 1
+            _ns_dbg('[SAT] 병상 누락 %d건 중 전국스냅샷으로 %d건 보충'
+                    % (len(_lack), _fill))
+    except Exception as _fe:
+        _ns_dbg('[SAT] 전국스냅샷 보충 예외 %s' % _fe)
 
     if not beds:
         _ns_dbg('sat FAILED %s' % fails[:3])
@@ -4217,6 +5345,7 @@ def api_bed_saturation():
     _ns_dbg('sat DONE n=%d fails=%d miss=%d %.1fs'
             % (len(out), len(fails), len(_miss), time.time() - t0))
     return jsonify({'success': True, 'cached': False, 'queried_at': at,
+                    'build': BUILD_ID,
                     'failed': fails, 'missing': _miss,
                     'count': len(out), 'rows': out})
 
@@ -4226,46 +5355,23 @@ _ALL_CACHE_TTL  = 12 * 3600
 _ALL_CACHE_TTL_SHORT = 180      # 0건 시/도가 남은 경우 자동 재시도 주기
 _ALL_CACHE_LOCK = _threading.Lock()
 
-_NS_LOG_PATHS = [
-    '/sdcard/Download/er_name_search.log',
-    '/sdcard/er_name_search.log',
-    '/data/local/tmp/er_name_search.log',
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'er_name_search.log'),
-]
-_NS_LOG_PICK = [None]
-
-
+#  [일원화 2026-H1] er_name_search.log 별도 파일 폐지 → ermon.log 단일화
 _NS_IO_LOCK = _threading.Lock()
-_NS_MAXSIZE = 1024 * 1024      # 1MB 초과 시 회전 (Android 저장소 보호)
 
 
 def _ns_dbg(msg):
-    """병원명 검색 전용 실시간 디버그 로그 (메모리 + 파일 동시 기록).
-    다중 스레드(포화도 조회 시 최대 6개)에서 동시 호출되므로 잠금 필수."""
-    line = '[NS] %s' % msg
-    try:
-        _dlog(line)
-    except Exception:
-        print(line)
+    """조회 파이프라인 실시간 로그. 통합 로그(ermon.log)에만 기록한다."""
     try:
         ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
     except Exception:
         ts = '??:??:??'
-    with _NS_IO_LOCK:
-        paths = [_NS_LOG_PICK[0]] if _NS_LOG_PICK[0] else _NS_LOG_PATHS
-        for p in paths:
-            try:
-                try:
-                    if os.path.exists(p) and os.path.getsize(p) > _NS_MAXSIZE:
-                        os.replace(p, p + '.1')
-                except Exception:
-                    pass
-                with open(p, 'a', encoding='utf-8') as f:
-                    f.write('%s %s\n' % (ts, line))
-                _NS_LOG_PICK[0] = p
-                return
-            except Exception:
-                continue
+    try:
+        _DEBUG_LINES.append('%s [NS] %s' % (ts, msg))
+        if len(_DEBUG_LINES) > 300:
+            _DEBUG_LINES.pop(0)
+    except Exception:
+        pass
+    _ulog('NS', msg)
 
 
 def _split_gugun(sido, addr):
@@ -4388,13 +5494,20 @@ EXC_STYLE = {
 }
 
 
-def _dept_black(text):
-    """'[진료과목] 본문' 에서 앞의 [ ] 부분만 검정으로 표시."""
+def _dept_color(text, color):
+    """'[진료과목] 본문' 서식.
+
+    [2026-H2] 색상 반전: [진료과목] 은 그룹 색(수용가능/수용불가/문의필요)과
+    동일하게, 이후 세부내용은 검정으로 표시한다(기존과 정반대).
+    → 과목이 먼저 눈에 들어오고 본문은 가독성 높은 검정으로 읽힌다.
+    """
     m = _re_msg.match(text or '')
     if not m:
-        return _html_escape(text or '')
-    return ('<span style="color:#000;">[%s]</span> %s'
-            % (_html_escape((m.group(1) or '').strip()),
+        return '<span style="color:#000;">%s</span>' % _html_escape(text or '')
+    return ('<span style="color:%s;font-weight:700;">[%s]</span> '
+            '<span style="color:#000;">%s</span>'
+            % (color,
+               _html_escape((m.group(1) or '').strip()),
                _html_escape((m.group(2) or '').strip())))
 
 
@@ -5035,28 +6148,24 @@ def _fetch_bed_line(hpid, sido, gugun, name_hint=''):
         return None
 
 
-_MONITOR_CFG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), 'bed_monitor.json')
-
-
+#  [일원화 2026-H1] bed_monitor.json 폐지 → ermon_state.json 'monitor' 섹션
 def _save_monitor_cfg():
     try:
         st = _bed_notify_state
-        with open(_MONITOR_CFG_PATH, 'w', encoding='utf-8') as f:
-            json.dump({'hospitals': st['hospitals'], 'iv': st['iv_sec'],
-                       'mode': st['mode'], 'h': st.get('h_param', ''),
-                       # 오버레이는 자동 복원 대상에서 제외한다.
-                       # (앱 재시작 시 사용자가 선택하지 않은 창이 뜨는 문제)
-                       'resume': st['mode'] != 'overlay',
-                       'ts': time.time()}, f, ensure_ascii=False)
+        _state_set('monitor', {
+            'hospitals': st['hospitals'], 'iv': st['iv_sec'],
+            'mode': st['mode'], 'h': st.get('h_param', ''),
+            # 오버레이는 자동 복원 대상에서 제외한다.
+            # (앱 재시작 시 사용자가 선택하지 않은 창이 뜨는 문제)
+            'resume': st['mode'] != 'overlay',
+            'ts': time.time()})
     except Exception as e:
         _dlog(f'[알림] 설정 저장 실패(무시): {e}')
 
 
 def _clear_monitor_cfg():
     try:
-        if os.path.exists(_MONITOR_CFG_PATH):
-            os.remove(_MONITOR_CFG_PATH)
+        _state_set('monitor', None)
     except Exception:
         pass
 
@@ -5064,10 +6173,9 @@ def _clear_monitor_cfg():
 def _resume_monitor_if_saved():
     """앱 재시작(강제종료 포함) 후 이전 모니터 자동 복원 — 6시간 이내 설정만."""
     try:
-        if not os.path.exists(_MONITOR_CFG_PATH):
+        cfg = _state_get('monitor')
+        if not cfg:
             return
-        with open(_MONITOR_CFG_PATH, encoding='utf-8') as f:
-            cfg = json.load(f)
         if not cfg.get('resume') or cfg.get('mode') == 'overlay':
             _dlog('[알림] 오버레이/비복원 설정 — 자동 복원 생략')
             _clear_monitor_cfg()
@@ -6257,7 +7365,7 @@ def generate_comparison_html(hospitals_data):
             # 그룹 제목: 같은 색 밑줄 / 그룹 사이 1줄 공백 / [진료과목]만 검정
             result = []
 
-            def _grp(title, color, lines, dept_black=True):
+            def _grp(title, color, lines, dept_color=True):
                 if not lines:
                     return
                 if result:                       # 첫 그룹 앞에는 공백 없음
@@ -6266,14 +7374,18 @@ def generate_comparison_html(hospitals_data):
                     f'<div style="color:{color};font-weight:700;margin-left:5px;'
                     f'text-decoration:underline;text-decoration-color:{color};">{title}</div>')
                 for item in lines:
-                    body = _dept_black(item) if dept_black else _html_escape(item)
+                    #  [2026-H2] 과목=그룹색 / 세부내용=검정 (기존과 반전)
+                    if dept_color:
+                        body, line_col = _dept_color(item, color), '#000'
+                    else:
+                        body, line_col = _html_escape(item), color
                     result.append(
-                        f'<div style="margin-left:10px;color:{color};line-height:1.3;">{body}</div>')
+                        f'<div style="margin-left:10px;color:{line_col};line-height:1.3;">{body}</div>')
 
             _grp('수용불가:', '#dc3545', un_lines)
             _grp('수용가능:', '#28a745', av_lines)
             _grp('※ 문의 필요:', '#e67e00', inq_lines)
-            _grp('상시 운영 제한:', '#5a6a7e', duty_inf_lines, dept_black=False)
+            _grp('상시 운영 제한:', '#5a6a7e', duty_inf_lines, dept_color=False)
 
             exc_fmt = ''.join(result) if result else exc
             html += (f'<td class="exception-cell exception-warning" '
@@ -6429,13 +7541,28 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
             // 저장본에서는 이 화면이 상위 문서의 iframe(srcdoc) 안에 있다.
             // history.back() 을 쓰면 최상위 문서가 원본 content:// 로 되돌아가
             // 권한 만료로 ERR_FILE_NOT_FOUND 가 난다. 오버레이만 닫는다.
+            var inFrame = false;
+            try { inFrame = !!(window.parent && window.parent !== window); }
+            catch (e) { inFrame = true; }
+            // ① 동일 출처(앱 내부 iframe): 부모 API 직접 호출
             try {
-                if (window.parent && window.parent !== window
-                    && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
+                if (inFrame && window.parent.EXAPP && window.parent.EXAPP.closeCompare) {
                     window.parent.EXAPP.closeCompare();
                     return;
                 }
             } catch (e) {}
+            // ② [ROOT-FIX 2026-G2] 저장본의 비교화면은 about:srcdoc 프레임이고,
+            //    부모 문서가 file:// · content:// 이면 opaque origin 이 되어
+            //    window.parent.EXAPP 접근이 SecurityError 로 차단된다.
+            //    → ①이 조용히 실패하고 ③④도 조건 불일치라 [뒤로가기]·[← 병원 선택]
+            //      양쪽이 완전 무반응이 되었다. postMessage 는 교차출처에서도
+            //      동작하므로 프레임 안에서는 이 경로를 정규 경로로 사용한다.
+            if (inFrame) {
+                try {
+                    window.parent.postMessage({ ermonClose: 1 }, '*');
+                    return;
+                } catch (e) {}
+            }
             try {
                 if (location.protocol === 'http:' || location.protocol === 'https:') {
                     location.href = '/';
@@ -6443,12 +7570,13 @@ EXPORT_HTML_SHELL = r'''<!DOCTYPE html>
                 }
             } catch (e) {}
             try {
-                if (window.top === window && history.length > 1) { history.back(); return; }
+                if (!inFrame && history.length > 1) { history.back(); return; }
             } catch (e) {}
             try { window.close(); } catch (e) {}
         }
         (function () {
             // 백버튼 가로채기는 최상위 문서에서만. iframe 에서 걸면 상위가 이탈한다.
+            //  (프레임일 때는 부모 글루가 popstate 를 잡아 오버레이를 닫는다)
             try {
                 if (window.top !== window) return;
                 history.pushState({ ermon: 1 }, '', location.href);
@@ -7135,12 +8263,17 @@ var EX = (function () {
                            + 'text-decoration:underline;text-decoration-color:' + color + ';">'
                            + title + '</div>');
                     lines.forEach(function (it) {
-                        var body = it;
+                        /* [2026-H2] 과목=그룹색 / 세부내용=검정 (앱과 동일) */
+                        var body = it, lineCol = color;
                         if (deptBlack !== false) {
+                            lineCol = '#000';
                             var mm = /^\[([^\]]*)\]\s*([\s\S]*)$/.exec(it || '');
-                            if (mm) body = '<span style="color:#000;">[' + mm[1] + ']</span> ' + mm[2];
+                            body = mm
+                                ? '<span style="color:' + color + ';font-weight:700;">['
+                                  + mm[1] + ']</span> <span style="color:#000;">' + mm[2] + '</span>'
+                                : '<span style="color:#000;">' + it + '</span>';
                         }
-                        res.push('<div style="margin-left:10px;color:' + color
+                        res.push('<div style="margin-left:10px;color:' + lineCol
                                + ';line-height:1.3;">' + body + '</div>');
                     });
                 };
@@ -7236,17 +8369,13 @@ var EX = (function () {
 
 
     // ── 전국 로스터 / 병상 / 포화도 (서버판과 동일 규격) ──────────
-    var SIDO_LIST = ['서울특별시','부산광역시','대구광역시','인천광역시','광주광역시',
-                     '대전광역시','울산광역시','세종특별자치시','경기도','강원특별자치도',
-                     '충청북도','충청남도','전북특별자치도','전라남도','경상북도',
-                     '경상남도','제주특별자치도'];
-    var SIDO_ALIAS = { '서울특별시':['서울'],'부산광역시':['부산'],'대구광역시':['대구'],
-        '인천광역시':['인천'],'광주광역시':['광주'],'대전광역시':['대전'],'울산광역시':['울산'],
-        '세종특별자치시':['세종','세종시'],'경기도':['경기'],'강원특별자치도':['강원','강원도'],
-        '충청북도':['충북'],'충청남도':['충남'],'전북특별자치도':['전북','전라북도'],
-        '전라남도':['전남'],'경상북도':['경북'],'경상남도':['경남'],'제주특별자치도':['제주','제주도'] };
-    // Q0(시/도) 필터가 0건만 반환하는 API 결함 대응용 구/군 목록
-    var GU_MAP = {"서울특별시":["강남구","강동구","강북구","강서구","관악구","광진구","구로구","금천구","노원구","도봉구","동대문구","동작구","마포구","서대문구","서초구","성동구","성북구","송파구","양천구","영등포구","용산구","은평구","종로구","중구","중랑구"],"부산광역시":["강서구","금정구","기장군","남구","동구","동래구","부산진구","북구","사상구","사하구","서구","수영구","연제구","영도구","중구","해운대구"],"대구광역시":["남구","달서구","달성군","동구","북구","서구","수성구","중구"],"인천광역시":["강화군","계양구","남구","남동구","동구","부평구","서구","연수구","옹진군","중구"],"광주광역시":["광산구","남구","동구","북구","서구"],"대전광역시":["대덕구","동구","서구","유성구","중구"],"울산광역시":["남구","동구","북구","울주군","중구"],"세종특별자치시":["세종특별자치시"],"경기도":["가평군","고양시","과천시","광명시","광주시","구리시","군포시","김포시","남양주시","동두천시","부천시","성남시","수원시","시흥시","안산시","안성시","안양시","양주시","양평군","여주시","연천군","오산시","용인시","의왕시","의정부시","이천시","파주시","평택시","포천시","하남시","화성시"],"강원특별자치도":["강릉시","고성군","동해시","삼척시","속초시","양구군","양양군","영월군","원주시","인제군","정선군","철원군","춘천시","태백시","평창군","홍천군","화천군","횡성군"],"충청북도":["괴산군","단양군","보은군","영동군","옥천군","음성군","제천시","증평군","진천군","청주시","충주시"],"충청남도":["계룡시","공주시","금산군","논산시","당진시","보령시","부여군","서산시","서천군","아산시","예산군","천안시","청양군","태안군","홍성군"],"전북특별자치도":["고창군","군산시","김제시","남원시","무주군","부안군","순창군","완주군","익산시","임실군","장수군","전주시","정읍시","진안군"],"전라남도":["강진군","고흥군","곡성군","광양시","구례군","나주시","담양군","목포시","무안군","보성군","순천시","신안군","여수시","영광군","영암군","완도군","장성군","장흥군","진도군","함평군","해남군","화순군"],"경상북도":["경산시","경주시","고령군","구미시","군위군","김천시","문경시","봉화군","상주시","성주군","안동시","영덕군","영양군","영주시","영천시","예천군","울릉군","울진군","의성군","청도군","청송군","칠곡군","포항시"],"경상남도":["거제시","거창군","고성군","김해시","남해군","밀양시","사천시","산청군","양산시","의령군","진주시","창녕군","창원시","통영시","하동군","함안군","함양군","합천군"],"제주특별자치도":["서귀포시","제주시"]};
+    /* [일원화 2026-H1] 행정구역 표는 파이썬 DISTRICTS/_SIDO_ALIAS 에서 주입한다.
+       JS 쪽에 별도 하드코딩을 두면 개편 때마다 두 곳이 어긋난다
+       (전남광주통합특별시 누락의 재발 방지). */
+    var _ADMIN = __ADMIN__;
+    var SIDO_LIST = _ADMIN.list, SIDO_ALIAS = _ADMIN.alias,
+        GU_MAP = _ADMIN.gu, SIDO_LEGACY = _ADMIN.legacy,
+        UNION_SIDO = _ADMIN.union;
     var ER_TAGS   = [['hvec','HVS01']];
     var WARD_TAGS = [['hvgc','HVS38'],['hv36','HVS19'],['hv37','HVS20'],['hv41','HVS25']];
     var ICU_TAGS  = [['hvicc','HVS17'],['hv2','HVS06'],['hv3','HVS07'],['hvncc','HVS08'],
@@ -7257,19 +8386,32 @@ var EX = (function () {
     var WI_W = 0.74, WI_I = 0.26, THETA = 2.0, BACI_CAP = 4.0;
     var _rosterCache = null, _satCache = null, _bedCache = {};
 
-    var _sidoLookup = null;
+    /* [ROOT-FIX 2026-H1] 접두 매칭은 2자 약칭('전남')이 신설 시/도
+       ('전남광주통합특별시')를 삼켜 전량 오분류를 일으켰다.
+       → 주소 첫 토큰의 '정확일치'를 1순위로, 접두 폴백은 3자 이상만 허용.
+       (앱 _sido_of 와 동일 규칙) */
+    var _sidoExact = null, _sidoPre = null;
     function sidoOf(addr) {
-        if (!_sidoLookup) {
-            _sidoLookup = [];
+        if (!_sidoExact) {
+            _sidoExact = {};
+            SIDO_LIST.forEach(function (k) { _sidoExact[k] = k; });
             SIDO_LIST.forEach(function (k) {
-                _sidoLookup.push([k, k]);
-                (SIDO_ALIAS[k] || []).forEach(function (a) { _sidoLookup.push([a, k]); });
+                (SIDO_ALIAS[k] || []).forEach(function (a) {
+                    if (!_sidoExact[a]) _sidoExact[a] = k;
+                });
             });
-            _sidoLookup.sort(function (a, b) { return b[0].length - a[0].length; });
+            Object.keys(SIDO_LEGACY || {}).forEach(function (o) {
+                if (SIDO_LIST.indexOf(SIDO_LEGACY[o]) !== -1) _sidoExact[o] = SIDO_LEGACY[o];
+            });
+            _sidoPre = Object.keys(_sidoExact).filter(function (k) { return k.length >= 3; })
+                             .sort(function (a, b) { return b.length - a.length; });
         }
         var h = String(addr || '').trim();
-        for (var i = 0; i < _sidoLookup.length; i++)
-            if (h.indexOf(_sidoLookup[i][0]) === 0) return _sidoLookup[i][1];
+        if (!h) return '';
+        var tok = h.split(/\s+/)[0];
+        if (_sidoExact[tok]) return _sidoExact[tok];
+        for (var i = 0; i < _sidoPre.length; i++)
+            if (tok.indexOf(_sidoPre[i]) === 0) return _sidoExact[_sidoPre[i]];
         return '';
     }
     function splitGugun(sido, addr) {
@@ -7298,16 +8440,77 @@ var EX = (function () {
         });
         return out;
     }
+    /* [ROOT-FIX 2026-G1] 시/도 파라미터를 쓰지 않는 전국 스냅샷.
+       Q0/STAGE1 필터가 광주광역시 등에서 0건만 주는 API 결함의 최종 폴백.
+       (앱 _nat_list_cached / _nat_beds_cached 와 동일 정책) */
+    var _natList = null, _natListT = 0, _natBeds = null, _natBedsT = 0;
+    async function natListCached(force) {
+        if (!force && _natList && Date.now() - _natListT < 300000) return _natList;
+        var rows = [], page = 1, total = -1;
+        try {
+            while (page <= 4) {
+                var doc = await apiGet('getEgytListInfoInqire',
+                    { pageNo: String(page), numOfRows: '500' });
+                var tc = parseInt(txt(doc, 'totalCount') || '-1', 10);
+                if (!isNaN(tc)) total = tc;
+                var got = listRows(doc, '');
+                rows = rows.concat(got);
+                if (!got.length || (total >= 0 && page * 500 >= total)) break;
+                page += 1;
+            }
+        } catch (e) { /* 부분 성공분만 사용 */ }
+        if (rows.length) { _natList = rows; _natListT = Date.now(); }
+        return _natList || [];
+    }
+    async function natBedsCached(force) {
+        if (!force && _natBeds && Date.now() - _natBedsT < 90000) return _natBeds;
+        var m = {}, page = 1, total = -1;
+        try {
+            while (page <= 4) {
+                var d = await apiGet('getEmrrmRltmUsefulSckbdInfoInqire',
+                    { pageNo: String(page), numOfRows: '500' });
+                var tc2 = parseInt(txt(d, 'totalCount') || '-1', 10);
+                if (!isNaN(tc2)) total = tc2;
+                var n0 = Object.keys(m).length;
+                items(d).forEach(function (it) {
+                    var hp = (txt(it, 'hpid') || '').trim();
+                    if (!hp || m[hp]) return;
+                    var yn = function (t) {
+                        return ((txt(it, t) || 'N') + '').trim().toUpperCase().charAt(0) === 'Y';
+                    };
+                    m[hp] = { er: bedObj(sumBeds(it, ER_TAGS)),
+                              ward: bedObj(sumBeds(it, WARD_TAGS)),
+                              icu: bedObj(sumBeds(it, ICU_TAGS)),
+                              eq: { crrt: yn('hvcrrtayn'), ecmo: yn('hvecmoayn'),
+                                    ttm: yn('hvhypoayn'), hbo: yn('hvoxyayn') },
+                              tel3: (txt(it, 'dutyTel3') || '').trim(),
+                              upd: (txt(it, 'hvidate') || '').trim() };
+                });
+                if (Object.keys(m).length === n0
+                    || (total >= 0 && page * 500 >= total)) break;
+                page += 1;
+            }
+        } catch (e) { /* 부분 성공분만 사용 */ }
+        if (Object.keys(m).length) { _natBeds = m; _natBedsT = Date.now(); }
+        return _natBeds || {};
+    }
     async function listBySido(sd) {
         var names = [sd].concat(SIDO_ALIAS[sd] || []);
+        var uni = (UNION_SIDO || []).indexOf(sd) !== -1, acc = [], accSeen = {};
         for (var i = 0; i < names.length; i++) {
             try {
                 var doc = await apiGet('getEgytListInfoInqire',
                     { Q0: names[i], pageNo: '1', numOfRows: '500' });
                 var r = listRows(doc, sd);
-                if (r.length) return r;
+                if (r.length) {
+                    if (!uni) return r;
+                    r.forEach(function (x) {
+                        if (!accSeen[x.hpid]) { accSeen[x.hpid] = 1; acc.push(x); }
+                    });
+                }
             } catch (e) { /* 다음 별칭 */ }
         }
+        if (uni && acc.length) return acc;
         // ── Q0 가 0건만 주는 시/도(광주광역시 등) → 구/군 단위로 나눠 조회 ──
         //    앱(_fetch_sido_list) 과 동일한 폴백
         var gus = GU_MAP[sd] || [];
@@ -7324,6 +8527,10 @@ var EX = (function () {
             }
             if (merged.length) return merged;
         }
+        /* ③ Q0/Q1 필터 자체가 고장난 경우 → 전국 스냅샷에서 주소로 추출 */
+        var nat = await natListCached(false);
+        var pick = nat.filter(function (h) { return h.sido === sd; });
+        if (pick.length) return pick;
         return [];
     }
     async function fetchAllHospitals(force) {
@@ -7407,6 +8614,7 @@ var EX = (function () {
         var c = _bedCache[sd];
         if (!force && c && Date.now() - c.t < 90000) return c.m;
         var names = [sd].concat(SIDO_ALIAS[sd] || []);
+        var uni = (UNION_SIDO || []).indexOf(sd) !== -1, accM = {}, accN = 0;
         for (var i = 0; i < names.length; i++) {
             try {
                 var doc = await apiGet('getEmrrmRltmUsefulSckbdInfoInqire',
@@ -7426,9 +8634,15 @@ var EX = (function () {
                               tel3: (txt(it, 'dutyTel3') || '').trim(),
                               upd: (txt(it, 'hvidate') || '').trim() };
                 });
-                if (Object.keys(m).length) { _bedCache[sd] = { t: Date.now(), m: m }; return m; }
+                if (Object.keys(m).length) {
+                    if (!uni) { _bedCache[sd] = { t: Date.now(), m: m }; return m; }
+                    Object.keys(m).forEach(function (k) {
+                        if (!accM[k]) { accM[k] = m[k]; accN++; }
+                    });
+                }
             } catch (e) { /* 다음 별칭 */ }
         }
+        if (uni && accN) { _bedCache[sd] = { t: Date.now(), m: accM }; return accM; }
         /* [ROOT-FIX 2026-D1] STAGE1 이 0건만 주는 시/도 → STAGE2 단위 합집합
            (앱 _fetch_sido_beds 와 동일) */
         var gus = GU_MAP[sd] || [];
@@ -7456,6 +8670,22 @@ var EX = (function () {
             }
             if (Object.keys(mm).length) { _bedCache[sd] = { t: Date.now(), m: mm }; return mm; }
         }
+        /* ③ STAGE1/STAGE2 가 고장난 시/도 → 전국 병상 스냅샷에서 hpid 로 추출 */
+        try {
+            var ids = {}, k;
+            (await natListCached(false)).forEach(function (h) {
+                if (h.sido === sd) ids[h.hpid] = 1; });
+            if (!Object.keys(ids).length && _rosterCache)
+                _rosterCache.forEach(function (h) { if (h.sido === sd) ids[h.hpid] = 1; });
+            if (Object.keys(ids).length) {
+                var nb = await natBedsCached(false), mp = {};
+                for (k in nb) if (ids[k]) mp[k] = nb[k];
+                if (Object.keys(mp).length) {
+                    _bedCache[sd] = { t: Date.now(), m: mp };
+                    return mp;
+                }
+            }
+        } catch (e) { /* 폴백 실패 */ }
         _bedCache[sd] = { t: Date.now(), m: {} };
         return {};
     }
@@ -7469,6 +8699,25 @@ var EX = (function () {
                      failed: _satCache.fails, rows: _satCache.rows, queried_at: _satCache.at };
         var all = await fetchAllHospitals(false);
         if (!all.success) return all;
+        /* [ROOT-FIX 2026-G1] 로스터에 0건인 시/도(광주광역시 등)를 라이브 복구.
+           포화도 화면은 로스터만 보므로 이 단계가 없으면 지역이 통째로 사라진다. */
+        try {
+            var cnt = {};
+            all.hospitals.forEach(function (h) { cnt[h.sido] = (cnt[h.sido] || 0) + 1; });
+            var missSd = SIDO_LIST.filter(function (k) { return !cnt[k]; });
+            if (missSd.length) {
+                setStatus('누락 지역 복구 ' + missSd.join(','));
+                var seenH = {};
+                all.hospitals.forEach(function (h) { seenH[h.hpid] = 1; });
+                for (var mi = 0; mi < missSd.length; mi++) {
+                    var rec = await listBySido(missSd[mi]).catch(function () { return []; });
+                    rec.forEach(function (h) {
+                        if (!seenH[h.hpid]) { seenH[h.hpid] = 1; all.hospitals.push(h); }
+                    });
+                }
+                _rosterCache = all.hospitals;
+            }
+        } catch (e) { /* 복구 실패 시 원본 유지 */ }
         var beds = {}, fails = [], b;
         for (b = 0; b < SIDO_LIST.length; b += 6) {
             setStatus('병상 포화도 ' + Math.min(b + 6, SIDO_LIST.length) + '/' + SIDO_LIST.length);
@@ -7481,6 +8730,14 @@ var EX = (function () {
                 Object.keys(x.m).forEach(function (k) { beds[k] = x.m[k]; });
             });
         }
+        /* 시/도 조회에서 누락된 hpid 를 전국 병상 스냅샷으로 보충 */
+        try {
+            var lack = all.hospitals.filter(function (h) { return !beds[h.hpid]; });
+            if (lack.length) {
+                var nbAll = await natBedsCached(force);
+                lack.forEach(function (h) { if (nbAll[h.hpid]) beds[h.hpid] = nbAll[h.hpid]; });
+            }
+        } catch (e) { /* 보충 실패 무시 */ }
         if (!Object.keys(beds).length)
             return { success: false, error: '실시간 병상 조회 실패: ' + fails.slice(0, 3).join('; ') };
         var Z = { a: 0, t: 0, r: null };
@@ -8347,6 +9604,17 @@ def _build_export_html(entries, iv_ms):
     return html
 
 
+def _admin_json():
+    """[일원화 2026-H1] JS 엔진에 주입할 행정구역 표 (파이썬 단일 원본)."""
+    return json.dumps({
+        'list': list(DISTRICTS.keys()),
+        'alias': {k: _SIDO_ALIAS.get(k, []) for k in DISTRICTS},
+        'gu': {k: list(v) for k, v in DISTRICTS.items()},
+        'legacy': dict(_SIDO_LEGACY),
+        'union': sorted(_UNION_SIDO),
+    }, ensure_ascii=False)
+
+
 def _export_engine_js(parent_cfg):
     """마커 사이 엔진 코드 추출 + 부모 페이지용 설정 주입.
     (JSON 이스케이프 사본과 구분하기 위해 마커 뒤 실제 개행을 요구)"""
@@ -8355,7 +9623,9 @@ def _export_engine_js(parent_cfg):
     m = _re.search(_pat, EXPORT_HTML_SHELL, _re.S)
     if not m:
         raise RuntimeError('export: 엔진 마커 추출 실패')
-    return m.group(1).replace('__CONFIG__', json.dumps(parent_cfg, ensure_ascii=False))
+    return (m.group(1)
+            .replace('__ADMIN__', _admin_json())
+            .replace('__CONFIG__', json.dumps(parent_cfg, ensure_ascii=False)))
 
 
 _LIVE_ENGINE_TPL = ['']
@@ -8394,6 +9664,7 @@ def _build_full_export(auto_entries, iv_ms):
     # ① 비교 문서 템플릿 (폰트/설정은 선택 시점에 JS가 채움)
     compare_tpl = EXPORT_HTML_SHELL
     compare_tpl = compare_tpl.replace('__CSS__', _export_css_template())
+    compare_tpl = compare_tpl.replace('__ADMIN__', _admin_json())
     compare_tpl = compare_tpl.replace('__CONFIG__', '"__EXCFG__"')
     compare_tpl = compare_tpl.replace('__GENERATED__', gen)
 
@@ -8475,13 +9746,22 @@ def _build_full_export(auto_entries, iv_ms):
         ' overlay.appendChild(fr);\n'
         ' overlay.appendChild(back);\n'
         ' document.body.appendChild(overlay);\n'
+        # [ROOT-FIX 2026-G2] 안드로이드 하드웨어 백버튼: 최상위 문서에서만
+        #  history 항목을 쌓고 popstate 로 오버레이를 닫는다. content:// 에서
+        #  pushState 가 거부되면(SecurityError) 버튼 경로만 남는다.
+        "        try { history.pushState({ exCompare: 1 }, ''); } catch (e) {}\n"
         ' }\n'
         ' function closeCompare() {\n'
         ' if (overlay) { overlay.remove(); overlay = null; }\n'
         ' try { document.title = BASE_TITLE; } catch (e) {}\n'
         ' }\n'
         "    window.addEventListener('message', function (e) {\n"
-        ' if (e && e.data && e.data.exTitle) { try { document.title = e.data.exTitle; } catch (err) {} }\n'
+        ' if (!e || !e.data) return;\n'
+        ' if (e.data.exTitle) { try { document.title = e.data.exTitle; } catch (err) {} }\n'
+        ' if (e.data.ermonClose) { closeCompare(); }\n'
+        ' });\n'
+        "    window.addEventListener('popstate', function () {\n"
+        ' if (overlay) closeCompare();\n'
         ' });\n'
         ' if (AUTO && AUTO.length) setTimeout(function () {\n'
         "        openCompare(AUTO.map(e =>e.hpid + '|' + e.sido + '|' + e.gugun).join(','));\n"
@@ -8991,7 +10271,10 @@ def api_enter_pip():
     except (ValueError, TypeError):
         _pip_state['iv_sec'] = 180
     _pip_state['pending'] = True
-    _dlog(f'[api/enter_pip] 수신: h={_pip_state["h_param"][:30]} iv={_pip_state["iv_sec"]}s')
+    _PIP_LAST.update({'stage': '요청 수신', 'ok': False, 'reason': '',
+                      'ts': time.time()})
+    _ulog('PIP', '브라우저 [백그라운드] 탭 → h=%s iv=%ss'
+          % (_pip_state['h_param'][:40], _pip_state['iv_sec']))
 
     # Kivy Activity 포그라운드 복귀 시도 (Flask 스레드에서 jnius 호출)
     if _IS_ANDROID:
@@ -9004,12 +10287,23 @@ def api_enter_pip():
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
                             Intent.FLAG_ACTIVITY_SINGLE_TOP)
             activity.startActivity(intent)
-            _dlog('[api/enter_pip] startActivity 성공 → on_resume 대기')
+            _ulog('PIP', 'startActivity 성공 → on_resume 대기')
         except Exception as _je:
-            _dlog(f'[api/enter_pip] startActivity 실패: {_je}')
-            _dlog('[api/enter_pip] → Clock._check_pip_request 폴백으로 처리')
+            _ulog('PIP', 'startActivity 실패: %s: %s → Clock 폴백'
+                  % (type(_je).__name__, _je))
 
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'build': BUILD_ID})
+
+
+@flask_app.route('/api/pip_status')
+def api_pip_status():
+    """[FIX 2026-H2] 브라우저가 PiP 실제 결과와 실패 사유를 즉시 확인.
+    (기존에는 요청만 던지고 성공 여부를 알 길이 없어 '무반응'으로 보였다)"""
+    d = dict(_PIP_LAST)
+    d['age'] = round(time.time() - (d.get('ts') or 0), 1)
+    d['android'] = _IS_ANDROID
+    d['build'] = BUILD_ID
+    return jsonify(d)
 
 
 # ── 동기화: 마지막 갱신 시각 조회 / 알림 ──────────────────────────
@@ -9816,20 +11110,9 @@ def _open_browser_android(url: str, delay: float = 2.0):
 
 _IS_ANDROID = hasattr(sys, 'getandroidapilevel')
 
-_EARLY_LOG_PATHS = [
-    '/sdcard/Download/emergency_crash.log',
-    '/sdcard/emergency_crash.log',
-    '/data/local/tmp/emergency_crash.log',
-]
+#  [일원화 2026-H1] emergency_crash.log 폐지 → ermon.log 단일화
 def _early_write(msg):
-    for _p in _EARLY_LOG_PATHS:
-        try:
-            with open(_p, 'a') as _f:
-                _f.write(msg + '\n')
-            return _p
-        except Exception:
-            continue
-    return None
+    return _ulog('BOOT', msg)
 
 if _IS_ANDROID:
     _early_write(f'[STEP0] main.py module loaded OK, __name__={__name__}')
@@ -9865,20 +11148,9 @@ def _open_browser_android(url: str, delay: float = 2.0):
 
 _IS_ANDROID = hasattr(sys, 'getandroidapilevel')
 
-_EARLY_LOG_PATHS = [
-    '/sdcard/Download/emergency_crash.log',
-    '/sdcard/emergency_crash.log',
-    '/data/local/tmp/emergency_crash.log',
-]
+#  [일원화 2026-H1] emergency_crash.log 폐지 → ermon.log 단일화
 def _early_write(msg):
-    for _p in _EARLY_LOG_PATHS:
-        try:
-            with open(_p, 'a') as _f:
-                _f.write(msg + '\n')
-            return _p
-        except Exception:
-            continue
-    return None
+    return _ulog('BOOT', msg)
 
 if _IS_ANDROID:
     _early_write(f'[STEP0] main.py module loaded OK, __name__={__name__}')
@@ -9918,20 +11190,17 @@ if _IS_ANDROID:
         return name
 
     # ─── PiP 선호 저장/복원 ─────────────────────────────────────
-    _PIP_PREFS_FILE  = '/sdcard/Download/pip_prefs.json'
-    _STATE_FILE      = '/sdcard/Download/emergency_state.json'
-
+    #  [일원화 2026-H1] pip_prefs.json / emergency_state.json 폐지
+    #   → ermon_state.json 의 'pip_prefs' · 'pip_state' 섹션
     def _load_pip_prefs():
         try:
-            with open(_PIP_PREFS_FILE, 'r') as _f:
-                return json.loads(_f.read())
+            return _state_get('pip_prefs', {'aspect_w': 16, 'aspect_h': 9})
         except Exception:
             return {'aspect_w': 16, 'aspect_h': 9}  # 기본 가로화면
 
     def _save_pip_prefs(prefs):
         try:
-            with open(_PIP_PREFS_FILE, 'w') as _f:
-                _f.write(json.dumps(prefs))
+            _state_set('pip_prefs', prefs)
         except Exception as _e:
             _dlog(f'[PiP] prefs 저장 실패: {_e}')
 
@@ -10307,15 +11576,11 @@ if _IS_ANDROID:
                 pass
 
             # ⑥ 상태파일 삭제 — 재기동 시 PiP 자동복원(좀비 재현) 차단
-            for _p in (_STATE_FILE,
-                       '/data/local/tmp/emergency_state.json',
-                       os.path.join(os.path.expanduser('~'), 'emergency_state.json')):
-                try:
-                    if os.path.exists(_p):
-                        os.remove(_p)
-                        _dlog(f'[EXIT] 상태파일 삭제: {_p}')
-                except Exception:
-                    pass
+            try:
+                _state_set('pip_state', None)
+                _dlog('[EXIT] PiP 상태 섹션 삭제')
+            except Exception:
+                pass
             self._h_param = ''
             try:
                 _pip_state['pending'] = False
@@ -10411,8 +11676,9 @@ if _IS_ANDROID:
 
         def on_resume(self):
             """포그라운드 복귀 시 pending 확인"""
+            _ulog('PIP', 'on_resume — busy 플래그 해제')
+            self._pip_busy = False        # [FIX 2026-H2] 좀비 잠김 방지
             _dlog('[Lifecycle] on_resume')
-            logging.info('[Lifecycle] on_resume')
             _dlog(f'[Lifecycle] on_resume _pip_state={_pip_state}')
             if getattr(self, '_exiting', False):
                 _dlog('[Lifecycle] on_resume: 종료 진행 중 → 무시')
@@ -10556,8 +11822,12 @@ if _IS_ANDROID:
                 # ── 카운트다운: [갱신 X:XX] [████████████████] 한 행 ──
                 # 텍스트(고정폭 좌) + 막대(나머지 전체폭) 수평 레이아웃
                 from kivy.uix.boxlayout import BoxLayout as _BL2
+                #  [FIX 2026-G3] 진행막대가 최하단 병원행을 가려서:
+                #   행 높이를 1/2 로 줄인다. 세로 BoxLayout 에서 이 행의
+                #   아래변은 고정이므로, 줄어든 만큼(= 새 막대 두께만큼)
+                #   막대 윗변이 아래로 내려가고 그 공간은 병원목록이 회수한다.
                 _timer_row = _BL2(orientation='horizontal',
-                                  size_hint_y=None, height=22, spacing=2)
+                                  size_hint_y=None, height=11, spacing=2)
                 self._timer_row = _timer_row  # resize 핸들러에서 참조
                 self._timer_lbl = Label(
                     text='',
@@ -10573,10 +11843,10 @@ if _IS_ANDROID:
                 self._timer_bar_widget = _TimerBarW(size_hint_x=1)
                 self._timer_bar_ratio = [0.0]  # [remaining_ratio]
                 with self._timer_bar_widget.canvas:
-                    self._tbg_rem = _TC(0.42, 0.79, 0.43, 1)   # 남은시간 녹색
-                    self._tb_rem  = _TR(pos=(0,0), size=(0,22))
-                    self._tbg_ela = _TC(0.12, 0.26, 0.12, 1)    # 경과 어두운 녹
-                    self._tb_ela  = _TR(pos=(0,0), size=(0,22))
+                    self._tbg_rem = _TC(1.0, 1.0, 1.0, 1)      # 남은시간 흰색
+                    self._tb_rem  = _TR(pos=(0,0), size=(0,11))
+                    self._tbg_ela = _TC(0.22, 0.22, 0.22, 1)   # 경과 어두운 회색
+                    self._tb_ela  = _TR(pos=(0,0), size=(0,11))
                 def _upd_timer_bar(w, *a,
                                    _rb=self._tb_rem, _re=self._tb_ela,
                                    _ratio=self._timer_bar_ratio):
@@ -10726,7 +11996,8 @@ if _IS_ANDROID:
 
                 #  갱신막대 행 높이 동적 조절 (가로/세로 전환 시 최대화)
                 if hasattr(self, '_timer_row'):
-                    self._timer_row.height = max(18, min(30, int(height * 0.045)))
+                    #  [FIX 2026-G3] 기존 대비 1/2 두께 유지
+                    self._timer_row.height = max(9, min(15, int(height * 0.0225)))
 
                 #  이슈9: PiP 창 크기 조절 시 폰트/레이아웃 동적 재계산
                 # Window 크기 변화 = PiP 창 크기 변화 → 즉시 재빌드
@@ -10879,8 +12150,9 @@ if _IS_ANDROID:
                 bar_sp = getattr(self, '_pip_bar_sp', 9)
 
                 # 타이머 텍스트 (남은시간) — 좌측 고정폭 레이블
+                #  [FIX 2026-G3] 행 높이 1/2 → 글자도 축소해야 잘리지 않는다
                 self._timer_lbl.text = (
-                    f'[size={bar_sp + 1}sp][color=#888888]갱신 {m}:{s:02d}[/color][/size]'
+                    f'[size={max(6, bar_sp - 2)}sp][color=#888888]갱신 {m}:{s:02d}[/color][/size]'
                 )
 
                 # Canvas 타이머 바: 남은비율로 직접 업데이트 (픽셀 완벽)
@@ -11073,36 +12345,28 @@ if _IS_ANDROID:
                     'iv_sec':  self._iv_sec,
                     'saved_at': time.time(),
                 }
-                with open(_STATE_FILE, 'w', encoding='utf-8') as _sf:
-                    _sf.write(json.dumps(state))
+                _state_set('pip_state', state)
                 _dlog(f'[State] 저장: h={self._h_param[:30]} iv={self._iv_sec}s')
             except Exception as _se:
                 _dlog(f'[State] 저장 실패: {_se}')
 
         def _restore_state(self):
             """저장된 상태를 복원. 성공 시 True 반환"""
-            for path in [_STATE_FILE,
-                         '/data/local/tmp/emergency_state.json',
-                         os.path.join(os.path.expanduser('~'), 'emergency_state.json')]:
-                try:
-                    with open(path, encoding='utf-8') as _sf:
-                        state = json.loads(_sf.read())
-                    h = state.get('h_param', '')
-                    #  좀비 PiP 차단: 30분 지난 상태는 폐기한다.
-                    if time.time() - float(state.get('saved_at', 0)) >1800:
-                        _dlog('[State] 만료된 저장 상태 → 폐기')
-                        try:
-                            os.remove(path)
-                        except Exception:
-                            pass
-                        continue
-                    if h:
-                        self._h_param = h
-                        self._iv_sec  = int(state.get('iv_sec', 180))
-                        _dlog(f'[State] 복원 성공: h={h[:40]} iv={self._iv_sec}s')
-                        return True
-                except Exception:
-                    pass
+            try:
+                state = _state_get('pip_state') or {}
+                h = state.get('h_param', '')
+                #  좀비 PiP 차단: 30분 지난 상태는 폐기한다.
+                if h and time.time() - float(state.get('saved_at', 0)) > 1800:
+                    _dlog('[State] 만료된 저장 상태 → 폐기')
+                    _state_set('pip_state', None)
+                    h = ''
+                if h:
+                    self._h_param = h
+                    self._iv_sec = int(state.get('iv_sec', 180))
+                    _dlog(f'[State] 복원 성공: h={h[:40]} iv={self._iv_sec}s')
+                    return True
+            except Exception as _re2:
+                _dlog(f'[State] 복원 예외: {_re2}')
             _dlog('[State] 복원할 저장 상태 없음')
             return False
 
@@ -11546,26 +12810,97 @@ if _IS_ANDROID:
             logging.info(f'[PiP] UI 갱신: {len(hospitals)}개 @ {fetched}')
 
         # ── PiP 모드 진입 ────────────────────────────────────
+        def _pip_note(self, stage, msg='', ok=None):
+            """[FIX 2026-H2] PiP 전 과정을 단일 태그로 기록 + 결과 슬롯 갱신."""
+            _PIP_LAST['stage'] = stage
+            _PIP_LAST['ts'] = time.time()
+            if ok is not None:
+                _PIP_LAST['ok'] = bool(ok)
+                _PIP_LAST['reason'] = '' if ok else (msg or stage)
+            _ulog('PIP', '%s%s' % (stage, (' | ' + msg) if msg else ''))
+
+        def _pip_release(self, why=''):
+            """busy 플래그 해제 단일 지점 — 어떤 경로로도 영구 잠김이 없게 한다."""
+            self._pip_busy = False
+            if why:
+                _ulog('PIP', 'busy 해제 (%s)' % why)
+
+        def _pip_capability_log(self):
+            """PiP 가능 여부의 '근거'를 기록한다. 무반응의 최다 원인은
+            매니페스트의 supportsPictureInPicture 누락이므로 반드시 남긴다."""
+            try:
+                from jnius import autoclass
+                act = None
+                for _c in ('org.kivy.android.PythonActivity',
+                           'org.kivy.android.GenericActivity'):
+                    try:
+                        act = autoclass(_c).mActivity
+                        if act is not None:
+                            break
+                    except Exception:
+                        continue
+                if act is None:
+                    _PIP_LAST['device_feature'] = None
+                    _PIP_LAST['manifest_flag'] = None
+                    _ulog('PIP', 'capability: Activity 없음')
+                    return
+                pm = act.getPackageManager()
+                feat = bool(pm.hasSystemFeature('android.software.picture_in_picture'))
+                sup = None
+                try:
+                    ai = pm.getActivityInfo(act.getComponentName(), 0)
+                    #  ActivityInfo.FLAG_SUPPORTS_PICTURE_IN_PICTURE = 0x00400000
+                    sup = bool(int(ai.flags) & 0x00400000)
+                except Exception as _aie:
+                    _ulog('PIP', 'ActivityInfo 조회 실패: %s' % _aie)
+                _PIP_LAST['device_feature'] = feat
+                _PIP_LAST['manifest_flag'] = sup
+                _ulog('PIP', 'capability: 기기지원=%s 매니페스트선언=%s pkg=%s'
+                      % (feat, sup, act.getPackageName()))
+                if sup is False:
+                    _ulog('PIP', '★ 매니페스트에 android:supportsPictureInPicture="true" '
+                                 '가 없음 → enterPictureInPictureMode 는 항상 실패한다')
+            except Exception as e:
+                _ulog('PIP', 'capability 조회 예외: %s' % e)
+
         def _enter_pip_mode(self):
-            _dlog('[PiP] _enter_pip_mode 진입')
+            self._pip_note('enter 요청', 'h=%s busy=%s' % (
+                (getattr(self, '_h_param', '') or '')[:40],
+                getattr(self, '_pip_busy', False)))
             if not _IS_ANDROID:
-                _dlog('[PiP] PC 환경 → 스킵')
+                self._pip_note('스킵', 'PC 환경', ok=False)
                 return
 
-            #  FIX(2026-C3): 중복 진입 차단
-            # moveTaskToBack() 폴백이 on_pause()를 재트리거하면서
-            # _enter_pip_mode()가 연속으로 두 번 호출되는 패턴을 방지.
-            # _pip_busy가 True인 동안은 즉시 반환.
+            #  [ROOT-FIX 2026-H2] _pip_busy 영구 잠김 제거
+            #   기존 코드는 'API<26 → return' 경로에서 _pip_busy=True 를 남긴 채
+            #   빠져나갔다. 해제 지점은 _do_pip 의 finally 뿐이므로, 그 경로를
+            #   한 번이라도 타면 이후 모든 PiP 요청이 '이미 실행 중'으로 조용히
+            #   무시된다 → [백그라운드]/[PiP] 버튼 무반응의 직접 원인.
+            #   이제 ① 모든 조기 return 에서 해제 ② 5초 워치독 ③ 6초 이상
+            #   잠겨 있으면 강제 해제 후 진행 — 어떤 경로로도 영구 잠김 불가.
             if getattr(self, '_pip_busy', False):
-                _dlog('[PiP] _enter_pip_mode 이미 실행 중 → 중복 호출 무시')
-                return
+                if time.time() - getattr(self, '_pip_busy_ts', 0) > 6:
+                    self._pip_note('busy 6초 초과', '강제 해제 후 진행')
+                    self._pip_busy = False
+                else:
+                    self._pip_note('중복 호출 무시', 'busy')
+                    return
             self._pip_busy = True
+            self._pip_busy_ts = time.time()
+            try:
+                Clock.schedule_once(
+                    lambda _dt: self._pip_release('워치독 5s'), 5.0)
+            except Exception:
+                pass
 
             api_level = EmergencyApp._get_real_api_level()
-            _dlog(f'[PiP] API={api_level}')
+            _PIP_LAST['api'] = api_level
+            self._pip_note('API 확인', 'level=%s' % api_level)
+            self._pip_capability_log()
 
             if api_level not in (0, 99) and api_level < 26:
-                _dlog(f'[PiP] API {api_level} < 26 → PiP 미지원')
+                self._pip_note('중단', 'API %s < 26 (PiP 미지원)' % api_level, ok=False)
+                self._pip_release('API 미지원')
                 return
 
             prefs = self._pip_prefs or {'aspect_w': 16, 'aspect_h': 9}
@@ -11611,7 +12946,7 @@ if _IS_ANDROID:
                             _dlog(f'[PiP] ActivityThread: {_at}')
 
                     if activity is None:
-                        _dlog('[PiP] Activity 획득 실패 → PiP 중단')
+                        self._pip_note('중단', 'Activity 획득 실패(4경로 전부)', ok=False)
                         return
 
                     try:
@@ -11652,95 +12987,124 @@ if _IS_ANDROID:
                             _dlog(f'[PiP] sourceRectHint 실패 (무시): {_re}')
                         params = builder.build()
                         result = activity.enterPictureInPictureMode(params)
-                        _dlog(f'[PiP] 진입 성공 result={result}')
-                        logging.info('[PiP] PIP 진입 성공')
+                        if result is False:
+                            self._pip_note('거부', 'enterPictureInPictureMode()=False '
+                                                   '(매니페스트/포그라운드 조건 확인)', ok=False)
+                        else:
+                            self._pip_note('진입 성공', 'result=%s' % result, ok=True)
 
                         # 사용된 aspect ratio 저장
                         _save_pip_prefs(prefs)
 
                     except Exception as _be:
-                        _dlog(f'[PiP] PIPBuilder 실패: {_be}')
-                        _dlog('[PiP] 파라미터 없이 재시도...')
+                        self._pip_note('파라미터 진입 실패',
+                                       '%s: %s' % (type(_be).__name__, _be))
                         try:
                             activity.enterPictureInPictureMode()
-                            _dlog('[PiP] 파라미터 없이 성공')
+                            self._pip_note('진입 성공', '파라미터 없이', ok=True)
                         except Exception as _e2:
-                            _dlog(f'[PiP] 모든 시도 실패: {_e2}')
-                            #  PiP 불가 폴백: moveTaskToBack으로 백그라운드 전환
-                            # (PiP 창은 안 뜨지만 앱이 백그라운드에서 타이머 계속 작동)
+                            #  PiP 불가 폴백: moveTaskToBack 으로 백그라운드 전환
+                            #  (PiP 창은 안 뜨지만 타이머는 계속 동작)
+                            _why = '%s: %s' % (type(_e2).__name__, _e2)
                             try:
                                 activity.moveTaskToBack(True)
-                                _dlog('[PiP] moveTaskToBack(True) 실행 (PiP 대체 백그라운드)')
+                                self._pip_note('폴백 백그라운드',
+                                               'moveTaskToBack(True) — PiP 원인: ' + _why,
+                                               ok=False)
                             except Exception as _mbe:
-                                _dlog(f'[PiP] moveTaskToBack 실패: {_mbe}')
+                                self._pip_note('전부 실패',
+                                               'PiP=%s / moveTaskToBack=%s' % (_why, _mbe),
+                                               ok=False)
+                except Exception as _oe:
+                    import traceback as _tb3
+                    self._pip_note('예외', '%s: %s\n%s'
+                                   % (type(_oe).__name__, _oe, _tb3.format_exc()),
+                                   ok=False)
                 finally:
-                    #  FIX(2026-C3): _do_pip 완료(성공/실패/예외 불문) 후 플래그 해제
-                    # 1.5초 지연: on_pause가 _do_pip 완료 직후 재트리거되더라도
-                    # 해당 on_pause 내 _enter_pip_mode 호출까지 차단 후 해제.
+                    #  _do_pip 완료(성공/실패/예외 불문) 후 플래그 해제.
+                    # 1.5초 지연: on_pause 가 재트리거돼도 그 안의 호출까지 차단.
                     Clock.schedule_once(
-                        lambda _dt: setattr(self, '_pip_busy', False), 1.5)
+                        lambda _dt: self._pip_release('_do_pip 완료'), 1.5)
 
             try:
                 from android.runnable import run_on_ui_thread as _rut
                 _rut(_do_pip)()
-                _dlog('[PiP] run_on_ui_thread 예약됨')
+                self._pip_note('UI스레드 예약', 'run_on_ui_thread')
             except ImportError:
                 Clock.schedule_once(lambda dt: _do_pip(), 0)
-                _dlog('[PiP] android.runnable 없음 → Clock 대체')
+                self._pip_note('UI스레드 예약', 'android.runnable 없음 → Clock 대체')
             except Exception as _rue:
-                _dlog(f'[PiP] run_on_ui_thread 예외 → 직접 호출: {_rue}')
+                self._pip_note('UI스레드 예약 실패', '%s → 직접 호출' % _rue)
                 _do_pip()
 
         # ── 로깅 설정 ────────────────────────────────────────
         def _setup_logging(self):
+            """[일원화 2026-H1] emergency_app.log 폐지.
+            logging 모듈 출력까지 ermon.log 한 파일로 흘려보낸다."""
+            global LOG_FILE
+            #  안드로이드 외부저장 경로를 최우선 후보로 승격 (앱 폴더는 접근 불가)
             log_dir = None
             try:
                 from jnius import autoclass as _ac
                 _PA = _ac('org.kivy.android.PythonActivity')
                 _ext = _PA.mActivity.getExternalFilesDir(None)
-                if _ext: log_dir = _ext.getAbsolutePath()
-            except Exception: pass
+                if _ext:
+                    log_dir = _ext.getAbsolutePath()
+            except Exception:
+                pass
             if not log_dir:
                 try:
                     from android.storage import app_storage_path as _asp
                     log_dir = _asp()
-                except Exception: pass
-            if not log_dir:
-                for _d in ['/sdcard/Download', '/sdcard', '/data/local/tmp']:
-                    try:
-                        os.makedirs(_d, exist_ok=True)
-                        _tp = os.path.join(_d, '.wt')
-                        open(_tp,'w').close(); os.remove(_tp)
-                        log_dir = _d; break
-                    except Exception: continue
-            if not log_dir:
-                log_dir = '/data/local/tmp'
-
-            os.makedirs(log_dir, exist_ok=True)
-            LOG_FILE = os.path.join(log_dir, 'emergency_app.log')
+                except Exception:
+                    pass
+            #  [일원화 2026-H3] ERMON_LOG(부트스트랩 지정)가 있으면 그 파일이
+            #   최종이다. 없을 때만, 그리고 현재 경로가 사용자에게 보이지 않는
+            #   내부 경로일 때만 외부저장소로 '이관'한다(복사+원본삭제).
+            if _LOG_FIXED:
+                _ulog('BOOT', '로그 경로 고정(ERMON_LOG): %s' % _log_path())
+            elif log_dir:
+                try:
+                    os.makedirs(log_dir, exist_ok=True)
+                    _cand = os.path.join(log_dir, LOG_NAME)
+                    _cur = _LOG_PICK[0] or ''
+                    _hidden = ('/data/data/' in _cur or '/data/user/' in _cur
+                               or not _cur)
+                    if _cur != _cand and _hidden:
+                        _log_migrate(_cand)
+                except Exception:
+                    pass
+            LOG_FILE = _log_path()
             _LOG_FILE_REF[0] = LOG_FILE
 
-            try: _fh = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
-            except Exception: _fh = logging.NullHandler()
-            _sh = logging.StreamHandler(sys.stdout)
-            _fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s',
-                                     datefmt='%H:%M:%S')
-            _fh.setFormatter(_fmt); _sh.setFormatter(_fmt)
+            class _UHandler(logging.Handler):
+                def emit(self, rec):
+                    try:
+                        _ulog('LOG', self.format(rec))
+                    except Exception:
+                        pass
+
+            _h = _UHandler()
+            _h.setFormatter(logging.Formatter('%(levelname)s %(message)s'))
             _root = logging.getLogger()
             _root.setLevel(logging.DEBUG)
             _root.handlers.clear()
-            _root.addHandler(_fh); _root.addHandler(_sh)
+            _root.addHandler(_h)
+            _install_crash_hooks()
+            try:                       # Kivy 내부 예외도 통합 로그로
+                from kivy.base import ExceptionHandler, ExceptionManager
+                import traceback as _tb2
 
-            def _exc_hook(t, v, tb):
-                logging.critical('미처리 예외!', exc_info=(t,v,tb))
-                for _h in logging.getLogger().handlers:
-                    try: _h.flush()
-                    except: pass
-            sys.excepthook = _exc_hook
-            logging.info('='*60)
-            logging.info('응급의료기관 앱 시작')
-            logging.info(f'로그: {LOG_FILE}')
-            logging.info('='*60)
+                class _KivyEH(ExceptionHandler):
+                    def handle_exception(self, inst):
+                        _ulog('CRASH', 'KIVY %s\n%s' % (inst, _tb2.format_exc()))
+                        return ExceptionManager.PASS
+
+                ExceptionManager.add_handler(_KivyEH())
+            except Exception as _ke:
+                _ulog('BOOT', 'Kivy 예외핸들러 등록 실패: %s' % _ke)
+            _ulog('BOOT', '통합 로그: %s' % LOG_FILE)
+            _ulog('BOOT', '통합 상태파일: %s' % _state_path())
             _early_write(f'[STEP2] log: {LOG_FILE}')
 
         def _log_selftest(self):
@@ -11752,12 +13116,8 @@ if _IS_ANDROID:
             path = _LOG_FILE_REF[0]
             ok, detail = False, 'log path 없음'
             try:
-                logging.info(mark)
-                for _h in logging.getLogger().handlers:
-                    try:
-                        _h.flush()
-                    except Exception:
-                        pass
+                _ulog('SELFTEST', mark)
+                path = _log_path()
                 if path and os.path.exists(path):
                     with open(path, encoding='utf-8', errors='replace') as _f:
                         try:
